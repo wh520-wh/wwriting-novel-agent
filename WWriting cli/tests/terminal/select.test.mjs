@@ -233,3 +233,27 @@ test('redrawBlock 用上一块的高度上移：块高摆动时不再吃掉菜�
   const ups = [...duringMoves.matchAll(/\x1b\[(\d+)A/g)].map((match) => Number(match[1]));
   assert.deepEqual(ups, expected, `每次重绘的上移量必须等于上一块高度：${JSON.stringify(ups)}`);
 });
+
+test('异常路径把光标还回来：按键处理炸了不吞异常，也不留下永久隐藏的光标', async () => {
+  const stdin = makeFakeStdin();
+  const stdout = makeSink();
+  const selector = createSelector({ stdin, stdout, env: { NO_COLOR: '1' } });
+  const pending = selector.ask({
+    title: '选择',
+    items: ITEMS,
+    summary: (item) => {
+      if (item.id === 'b') throw new Error('summary 炸了');
+      return `已选：${item.label}`;
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  press(stdin, 'down'); // 移到会炸的那一项（move 路径正常，光标已藏起）
+  assert.ok(stdout.text().includes('\x1b[?25l'), '菜单打开时光标被藏起');
+  assert.throws(() => press(stdin, 'return'), /summary 炸了/, '异常照常炸出来，不被吞掉');
+  assert.ok(stdout.text().includes('\x1b[?25h'), '异常路径兜底把光标还回来');
+
+  // 收尾卫生：Esc 让挂起的 ask 正常结束，监听器摘干净，测试进程不留尾巴。
+  press(stdin, 'escape');
+  assert.equal(await pending, null);
+});

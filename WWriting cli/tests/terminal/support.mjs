@@ -81,15 +81,41 @@ export function makeFakeComposer(line = '') {
   };
 }
 
-// 可控定时器：流式节流依赖它，测试要能确定性地说「时间到了」。
+// 时钟替身：renderer 的 spinner 时钟（ADR-0018）是注入的。多数用例不关心动效——
+// 默认给一个「从不推进」的 noop 时钟，保证测试进程里不出现真实 setInterval；
+// 要断言帧推进的用例用 makeManualClock 显式步进。直连 createRenderer 的用例也必须带上它，
+// 否则运行态动态行一画就是一条真实 120ms 定时器，测试进程被事件循环吊住不退出。
+export const noopScheduleTick = () => () => {};
 
-export function makeRenderer({ tty = false, color, env = {}, composer = null, columns = undefined } = {}) {
+export function makeRenderer({
+  tty = false, color, env = {}, composer = null, columns = undefined, scheduleTick = noopScheduleTick,
+} = {}) {
   const guard = composer
     ? () => composer.isActive() && composer.occupied
     : null;
   const stdout = makeStdout({ tty, guard, columns });
-  const renderer = createRenderer({ stdout, color, env, composer });
+  const renderer = createRenderer({ stdout, color, env, composer, scheduleTick });
   return { renderer, stdout };
+}
+
+// 手动时钟：scheduleTick 收到的回调存进队列，测试用 step() 显式推进一帧；
+// cancelled 计「收摊」次数——终态 0 循环动效的断言就落在它身上。
+export function makeManualClock() {
+  const pending = [];
+  let cancelled = 0;
+  return {
+    scheduleTick(fn) {
+      pending.push(fn);
+      return () => {
+        cancelled += 1;
+      };
+    },
+    step() {
+      for (const fn of [...pending]) fn();
+    },
+    get scheduled() { return pending.length; },
+    get cancelled() { return cancelled; },
+  };
 }
 
 export function feed(bridge, type, data = {}, extra = {}) {

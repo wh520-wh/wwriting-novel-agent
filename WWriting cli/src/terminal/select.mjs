@@ -148,7 +148,9 @@ export function createSelector({ stdin, stdout, env = process.env, color } = {})
     stdout.write(HIDE_CURSOR);
 
     return new Promise((resolve) => {
+      let finished = false;
       const finish = (result, summaryLine) => {
+        finished = true;
         stdin.removeListener('keypress', onKey);
         // 这里**刻意不恢复** raw 模式（曾按 wasRaw 恢复，真机 ConPTY 走查发现会吞键）：
         // 「raw false→true」紧挨着输出活动翻转时，宿主会丢掉恢复后第一波按键——
@@ -162,29 +164,36 @@ export function createSelector({ stdin, stdout, env = process.env, color } = {})
       };
 
       const onKey = (sequence, key) => {
-        const action = menuAction(key, { selected, count: items.length });
-        if (action === null) return;
-        if (action.type === 'move') {
-          if (action.selected !== selected) {
-            selected = action.selected;
+        try {
+          const action = menuAction(key, { selected, count: items.length });
+          if (action === null) return;
+          if (action.type === 'move') {
+            if (action.selected !== selected) {
+              selected = action.selected;
+              block = build();
+              ledger.redraw(block);
+            }
+            return;
+          }
+          if (action.type === 'cancel') {
+            finish(null, cancelSummary);
+            return;
+          }
+          const index = action.type === 'select' ? action.selected : selected;
+          if (action.type === 'select' && index !== selected) {
+            selected = index;
             block = build();
             ledger.redraw(block);
           }
-          return;
+          const item = items[index];
+          // summary 可以是 null——那表示「整块抹掉」，确认行由调用方自己打（引导页就是这么用的）。
+          finish({ item, index }, typeof summary === 'function' ? summary(item) : null);
+        } catch (error) {
+          // 按键处理半路炸了：finish 没跑成，光标还藏在块里——不还回去，整个会话从此没有光标。
+          // 只补光标恢复，不吞异常：该炸的照样炸出来（与原语义一致），只是不再留下不可逆的副作用。
+          if (!finished) stdout.write(SHOW_CURSOR);
+          throw error;
         }
-        if (action.type === 'cancel') {
-          finish(null, cancelSummary);
-          return;
-        }
-        const index = action.type === 'select' ? action.selected : selected;
-        if (action.type === 'select' && index !== selected) {
-          selected = index;
-          block = build();
-          ledger.redraw(block);
-        }
-        const item = items[index];
-        // summary 可以是 null——那表示「整块抹掉」，确认行由调用方自己打（引导页就是这么用的）。
-        finish({ item, index }, typeof summary === 'function' ? summary(item) : null);
       };
 
       stdin.on('keypress', onKey);

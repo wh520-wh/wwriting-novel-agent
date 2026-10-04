@@ -12,13 +12,23 @@ import { createMarkdownWriter } from './markdown.mjs';
 // 分工：style.mjs 管「长什么样」，本文件管「把行写到 stdout」（让位/画回/实时区合成），
 // 事件 → 渲染的翻译在 event-bridge.mjs——三种生命周期不再挤在一个文件里。
 import {
-  STYLE, THINKING_PREVIEW_LINES, activityLabel, paintText, planPanelLines, planTableLines,
-  resolveColor, thinkingPreviewLines, thinkingPreviewWidth, userRows,
+  SPINNER_FRAMES, SPINNER_INTERVAL_MS, STYLE, THINKING_PREVIEW_LINES, activityLabel, paintText,
+  planPanelLines, planTableLines, resolveColor, thinkingPreviewLines, thinkingPreviewWidth, userRows,
 } from './style.mjs';
 
 // 光标控制码：抹掉整行并把光标放回行首。
 // （上移/下移由输入层负责——输入区是它的，框有几行只有它知道。）
 const ERASE_LINE = '\r\x1b[K';
+
+// 默认时钟：真机用 setInterval（ADR-0018 里全库唯一的一个）。测试注入手动步进的替身——
+// 与 columns 用函数注入是同一条纪律：有状态的外部性绝不藏在模块里。unref 让定时器
+// 永远不拖住进程退出：退出路径的卫生不依赖「记得 stop」，spinner 活着靠的是
+// readline 等真实句柄，不靠这一个定时器撑事件循环。
+const defaultScheduleTick = (fn, ms) => {
+  const timer = setInterval(fn, ms);
+  timer.unref();
+  return () => clearInterval(timer);
+};
 
 // 活动行标记：运行中 • / 完成 ✓ / 失败 ✗ / 已停止 −（对齐设计规格书 §4.3）。
 const ACTIVITY_MARK = Object.freeze({ running: '•', done: '✓', failed: '✗', stopped: '−' });
@@ -56,6 +66,7 @@ export function createRenderer({
   color,
   env = process.env,
   composer = null,
+  scheduleTick = defaultScheduleTick,
 } = {}) {
   if (!stdout || typeof stdout.write !== 'function') {
     throw new Error('渲染器需要一个可写的 stdout。');
@@ -140,6 +151,7 @@ export function createRenderer({
         }
         liveOpen = false; // 让位时输入区连同上方的实时行一起没了，那件事已经过去了
         liveBody = null; // 实时区被物理擦掉：动态行不再算数，等下一次 drawLive 重新挂
+        spinnerStop(); // 动态行没了，动效跟着停（终态 0 循环动效的「让位」分支）
         lastLiveSet = undefined; // 输入层那侧的 live 也一并没了，去重记录跟着作废
       }
       return;
@@ -160,22 +172,87 @@ export function createRenderer({
     if (liveBody !== null || livePlan !== null) refreshLive();
   }
 
+  // 实时区宽度闸门（缺陷猎捕报告 7）：实时区一行都不许超宽，按行截断保持行数语义；
+  // 完成后落 scrollback 的那一行不经过这里，仍是全文。
+  function clipLive(text) {
+    return String(text ?? '').split('\n')
+      .map((line) => clipToWidth(line, resolveColumns(stdout.columns) - 1))
+      .join('\n');
+  }
+
+  // —— 运行态 spinner（ADR-0018：全库唯一的循环动效）——
+  //
+  // 只活在实时区：帧字符顶替动态行的标记位（活动行的 • 原位换帧；状态行/思考预览
+  // 没有标记位，帧字符前置成「状态点 + 文案」），文案不动。终态 / 让位写 scrollback /
+  // 关闭三处必停——终态 0 循环动效；正文路径（printAssistant）不碰时钟，流式感仍来自
+  // 「一行一行冒出来」。管道（无 composer）没有实时区可重绘，永不启动。
+  let spinnerCancel = null;
+  let spinnerFrame = 0;
+  let spinBase = null; // 自旋动态行的未上色文本与色调；null = 当前的动态行不自旋
+
+  // 活动行自带「• 」标记：帧字符原位替换（宽度不变）；其余（状态行、思考预览首行）：
+  // 帧字符 + 空格前置。只动第一行——预览的第二行缩进归 style.mjs 管。
+  function spinText(text, frame) {
+    const lines = String(text ?? '').split('\n');
+    const head = lines[0];
+    lines[0] = head.startsWith(`${ACTIVITY_MARK.running} `)
+      ? `${frame}${head.slice(ACTIVITY_MARK.running.length)}`
+      : `${frame} ${head}`;
+    return lines.join('\n');
+  }
+
+  function paintSpin() {
+    liveBody = paint(clipLive(spinText(spinBase.text, SPINNER_FRAMES[spinnerFrame])), spinBase.tone);
+  }
+
+  function spinnerStart() {
+    if (closed || hook === null || spinBase === null) return;
+    if (spinnerCancel !== null) {
+      paintSpin(); // 已在自旋：换了一行自旋内容，立刻以当前帧重画，不让裸文案闪一帧
+      refreshLive();
+      return;
+    }
+    spinnerFrame = 0;
+    paintSpin();
+    spinnerCancel = scheduleTick(() => {
+      spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
+      if (closed || liveBody === null || spinBase === null) {
+        spinnerStop(); // 动态行已经没了：时钟自己收摊，不留空转的定时器
+        return;
+      }
+      paintSpin();
+      refreshLive(); // 帧字符变了，去重不会吞掉这次重绘
+    }, SPINNER_INTERVAL_MS);
+    refreshLive(); // 首帧立刻上屏（原本那行还是 • / 无标记的样子）
+  }
+
+  function spinnerStop() {
+    if (spinnerCancel === null) return;
+    const cancel = spinnerCancel;
+    spinnerCancel = null;
+    spinBase = null;
+    cancel();
+  }
+
   // 动态行：此刻正在发生的事。有 composer 时它贴在输入框的上方（输入层负责重画）；
   // 只有真正没有 composer（管道 / 非 TTY，组合根传 composer: null）才用 \r\x1b[K 就地重绘。
   // composer 在而输入区没激活（start 之前 / 让位期间）不直写——内容攒进 liveBody，
   // 激活后经 refreshLive 上屏或被新状态替换；直写会让那行落在输入层擦不到的位置。
   // 动态行不会清掉「上一行活动行」的记忆——否则同一件工具在同一轮里反复失败时，
   // 那十几行就没有一行是相邻的，合并无从谈起。
-  function drawLive(text, tone = 'info') {
+  // spin=true 表示这一行是「正在运行」的动态行：挂上 spinner（ADR-0018）。
+  function drawLive(text, tone = 'info', { spin = false } = {}) {
     // 宽度闸门（缺陷猎捕报告 7）：实时区一行都不许超宽，按行截断保持行数语义；
     // 完成后落 scrollback 的那一行不经过这里，仍是全文。
-    const clipped = String(text ?? '').split('\n').map((line) => clipToWidth(line, resolveColumns(stdout.columns) - 1)).join('\n');
+    const clipped = clipLive(text);
     const body = paint(clipped, tone);
     const kept = lastActivity;
     if (hook !== null) {
       liveOpen = true;
       lastActivity = kept;
       liveBody = body;
+      spinBase = spin ? { text: clipped, tone } : null;
+      if (spin) spinnerStart();
       refreshLive(); // 输入区没激活时它自己退回：内容先攒着
       return;
     }
@@ -190,10 +267,14 @@ export function createRenderer({
   function endLive() {
     if (!liveOpen) return;
     liveOpen = false;
+    spinnerStop(); // 动态行收掉了：终态 0 循环动效
     const kept = lastActivity;
     if (hook !== null) {
       liveBody = null; // 未激活时攒着的那份一并作废：它从未上屏，也不该迟到地出现
       refreshLive();
+      if (!usingComposer()) lastLiveSet = undefined;
+      // 挂起期间（输入区让位给选择器/向导）refreshLive 早退，这次「清空」没送达输入层；
+      // 去重记录却还押着旧文本——恢复后本该发生的整表替换会被它吞掉，旧动态行复活。
       lastActivity = kept;
       return;
     }
@@ -380,7 +461,7 @@ export function createRenderer({
     const next = thinkingPreviewLines(thinkingDone, { columns: stdout.columns }).join('\n');
     if (next === lastThinkingLive) return;
     lastThinkingLive = next;
-    drawLive(next, 'info');
+    drawLive(next, 'info', { spin: true }); // 思考中也是运行态：标签行带帧字符（上游 shimmer 的终端等价）
   }
 
   // 收走思考预览（模型轮次结束、Run 开始）：下一片 delta 到达时从头攒。
@@ -441,7 +522,7 @@ export function createRenderer({
     sealProseGap();
     resetMarkdown(); // 工具行 = 消息边界：上一条消息里没闭合的围栏到此为止
     if (state === 'running') {
-      drawLive(line, tone);
+      drawLive(line, tone, { spin: true });
       return;
     }
     const signature = `${tone}|${line}`;
@@ -462,7 +543,7 @@ export function createRenderer({
     flushProse({ force: true });
     sealProseGap();
     if (!final) {
-      drawLive(text, tone);
+      drawLive(text, tone, { spin: true }); // 运行态：帧字符前置（对齐上游「状态点 + 文案」）
       return;
     }
     openBlock();
@@ -539,6 +620,7 @@ export function createRenderer({
   function close() {
     if (closed) return;
     resetThinkingPreview();
+    spinnerStop(); // 终态 0 循环动效的兜底：endLive 之外的任何路径也不许留定时器
     flushProse({ force: true });
     endLive();
     closed = true;

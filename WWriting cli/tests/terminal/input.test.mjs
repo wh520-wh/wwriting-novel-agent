@@ -11,6 +11,7 @@ import {
 } from '../../src/terminal/input.mjs';
 import { createInputYielder } from '../../src/terminal/input-yield.mjs';
 import { createRenderer } from '../../src/terminal/renderer.mjs';
+import { noopScheduleTick } from './support.mjs';
 import { screenText } from '../helpers/screen.mjs';
 
 // 伪 TTY：readline 需要 isTTY / setRawMode 才能在回车与 Ctrl+C 上给出同样的行为。
@@ -205,7 +206,7 @@ test('集成：Run 进行中的输出写在框上方，用户键入的内容与�
   await tick();
   assert.match(screen(), /^\s+─{20,}\n❯ 写第二章\n\s+─{20,}$/, '键入的内容写在框里，框也跟着重画');
 
-  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' }, composer: reader.composer });
+  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' }, composer: reader.composer, scheduleTick: noopScheduleTick });
   renderer.printStatus('思考中');
   renderer.printActivity({ state: 'running', label: '读取文件 大纲.md' });
   renderer.printAssistant('第一章开始了。\n');
@@ -465,7 +466,7 @@ test('start 之前渲染器直写的动态行：start 后不得残留在框的�
   const stdin = makeFakeTTY();
   const stdout = makeSink({ tty: true });
   const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' }, onSubmit: () => {} });
-  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' }, composer: reader.composer });
+  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' }, composer: reader.composer, scheduleTick: noopScheduleTick });
 
   renderer.printStatus('思考中', { final: false }); // start 之前到达的动态行
   reader.start();
@@ -475,7 +476,7 @@ test('start 之前渲染器直写的动态行：start 后不得残留在框的�
 
   renderer.printStatus('搜索文件', { final: false }); // start 之后：composer 协议
   await tick();
-  assert.match(screen(), /^搜索文件\n\s*─{20,}\n❯ *\n\s*─{20,}$/, '当前动态行贴在框上方');
+  assert.match(screen(), /^⠋ 搜索文件\n\s*─{20,}\n❯ *\n\s*─{20,}$/, '当前动态行贴在框上方（运行态带帧字符）');
   assert.doesNotMatch(screen(), /思考中/, 'start 前的动态行不得残留在画面上');
 
   reader.stop();

@@ -1,11 +1,14 @@
-// 排版走查样张：把一段富样张灌进真实渲染器，人工过目垂直节奏（ADR-0019）。
-// 不参与自动化测试——它的产出是给眼睛看的，验收标准是「读起来像一篇排过版的稿子」。
+// 排版走查样张：把一段富样张灌进真实渲染器，人工过目垂直节奏（ADR-0019）与动效词汇
+// （ADR-0018）。不参与自动化测试——它的产出是给眼睛看的，验收标准是「读起来像一篇
+// 排过版的稿子」。spinner 的真实推进只在交互会话的运行态（唯一受控时钟），这里静态
+// 展示全部帧字符；样张以管道方式跑，动态行按管道退路直写、帧停在首帧。
 //
 // 用法：
 //   node scripts/ui-sample.mjs              按当前环境上色（TTY 下）
 //   NO_COLOR=1 node scripts/ui-sample.mjs   无色，看纯结构
 //   node scripts/ui-sample.mjs | cat        重定向后颜色自动关闭
 import { createRenderer } from '../src/terminal/renderer.mjs';
+import { SPINNER_FRAMES } from '../src/terminal/style.mjs';
 
 const SAMPLE = [
   '第三章的雨夜戏改完了：删掉了第二个闪回，把钩子从章尾提到了第二场。',
@@ -48,6 +51,7 @@ renderer.printAssistant('改完了。要我把同一套改法套到第四章吗�
 renderer.printStatus('已完成', { final: true, tone: 'success', note: '本轮 3,820 字' });
 
 renderer.printReasoning('用户嫌雨夜戏拖。第二场闪回和主线无关，删掉后钩子可以提前……');
+renderer.printReasoning(`运行态 spinner 帧（真实推进只在运行态）：${SPINNER_FRAMES.join(' ')}`);
 renderer.printPlan([
   { summary: '删第二场闪回', status: 'completed' },
   { summary: '压缩对话轮数', status: 'completed' },

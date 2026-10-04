@@ -47,6 +47,12 @@ const TONE = Object.freeze({
   active: `${STYLE.accent}${STYLE.bold}`,
 });
 
+// 运行态 spinner（ADR-0018）：全库唯一的循环动效。braille 点字与活动行标记 • 同族，
+// 帧字符顶替动态行的标记位，文案不动（2–6 字纪律）。是字符不是颜色，NO_COLOR 照常；
+// 推进只在运行态（时钟由 renderer 注入，终态必停），静默期屏幕不再是一片死寂。
+export const SPINNER_FRAMES = Object.freeze(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']);
+export const SPINNER_INTERVAL_MS = 120;
+
 // 用户行标记：与输入提示符是同一个字符，视觉上「这一行是我说的」。
 // 铁律 9 只说 Agent 消息不带头像与署名，用户行有自己的标记不冲突。
 export const USER_MARK = '❯';

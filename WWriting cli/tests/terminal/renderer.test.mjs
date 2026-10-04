@@ -11,7 +11,8 @@ import { createEventRenderer } from '../../src/terminal/event-bridge.mjs';
 import { displayWidth, proseRowWidth } from '../../src/terminal/metrics.mjs';
 import { screenText } from '../helpers/screen.mjs';
 import { VERSION, versionLine } from '../../src/version.mjs';
-import { assertNoColor, feed, makeFakeComposer, makeRenderer, makeStdout } from './support.mjs';
+import { assertNoColor, feed, makeFakeComposer, makeManualClock, makeRenderer, makeStdout } from './support.mjs';
+import { SPINNER_FRAMES } from '../../src/terminal/style.mjs';
 
 // —— 静态输出进 scrollback ——
 
@@ -376,9 +377,9 @@ test('Run 进行中的渲染：动态行贴在上方，正文与终态写出时�
   assert.deepEqual(composer.violations, [], '让位与画回必须严格成对');
   assert.ok(composer.calls.includes('takeArea'));
   assert.equal(composer.calls.at(-1), 'giveArea', '收尾时输入区必须在屏幕上');
-  // 动态行走 setLive，不占 scrollback；收尾时被清掉。
-  assert.ok(composer.calls.includes('setLive:思考中'));
-  assert.ok(composer.calls.includes('setLive:• 读取文件 大纲.md'));
+  // 动态行走 setLive，不占 scrollback；收尾时被清掉。运行态带帧字符（ADR-0018 首帧 ⠋）。
+  assert.ok(composer.calls.includes('setLive:⠋ 思考中'));
+  assert.ok(composer.calls.includes('setLive:⠋ 读取文件 大纲.md'));
   assert.equal(composer.live, null, 'Run 结束后没有残留的实时行');
 
   const text = stdout.text();
@@ -419,7 +420,7 @@ test('composer 在但输入区没激活：动态行攒着不直写（直写了 s
   // 激活后动态行经 setLive 上屏；攒着的旧状态已被替换，既没直写过也不得复活。
   active = true;
   renderer.printStatus('搜索文件', { final: false });
-  assert.equal(composer.live, '搜索文件', '激活后动态行走 composer 协议');
+  assert.equal(composer.live, '⠋ 搜索文件', '激活后动态行走 composer 协议（运行态带帧字符）');
   assert.ok(!stdout.text().includes('思考中'), '未上屏的旧动态行不得出现在字节流里');
   assert.ok(!stdout.text().includes('搜索文件'), '动态行不占 scrollback，只走 setLive');
 
@@ -477,7 +478,7 @@ test('printThinkingPreview：只在攒满一整行时才重绘（流式逐字到
   renderer.printThinkingPreview('\n');
   const live = composer.calls.filter((call) => call.startsWith('setLive:'));
   assert.equal(live.length, 1, '换行一到就重绘一次');
-  assert.equal(live[0], 'setLive:思考中 · 主角为什么不肯离开');
+  assert.equal(live[0], 'setLive:⠋ 思考中 · 主角为什么不肯离开');
 });
 
 test('printThinkingPreview：同一份内容推两次只重绘一次', () => {
@@ -498,8 +499,8 @@ test('printThinkingPreview：两行封顶，旧行滚出去', () => {
 
   renderer.printThinkingPreview('第一句\n第二句\n第三句\n');
   assert.equal(
-    composer.live, `思考中 · 第二句\n${' '.repeat(9)}第三句`,
-    '实时区只有两行，最早那句滚出去',
+    composer.live, `⠋ 思考中 · 第二句\n${' '.repeat(9)}第三句`,
+    '实时区只有两行，最早那句滚出去（帧字符只动首行）',
   );
 });
 
@@ -527,10 +528,10 @@ test('printThinkingPreview：终端太窄时维持状态行，绝不输出会被
   const bridge = createEventRenderer({ renderer });
 
   bridge.handleEvent({ type: 'run_started', at: '2026-09-29T00:00:00.000Z', data: { text: 'hi' } });
-  assert.equal(composer.live, '思考中');
+  assert.equal(composer.live, '⠋ 思考中');
 
   renderer.printThinkingPreview('一句很长的话\n');
-  assert.equal(composer.live, '思考中', '放不下就不预览，而不是挤成两三个字一行');
+  assert.equal(composer.live, '⠋ 思考中', '放不下就不预览，而不是挤成两三个字一行');
   assert.equal(
     composer.calls.filter((call) => call.startsWith('setLive:')).length, 1,
     '一次多余的 setLive 都没有',
@@ -546,7 +547,7 @@ test('思考预览：一轮里的第二段思考从头攒，不接在第一段�
   // 模型轮次结束：预览到此为止（下一段由下一次模型请求重新开始）
   bridge.handleEvent({ type: 'reasoning_completed', at: '2026-09-29T00:00:05.000Z', data: { text: '第一轮的思考', started_at: '2026-09-29T00:00:00.000Z', chars: 6 } });
   renderer.printThinkingPreview('第二轮\n');
-  assert.equal(composer.live, '思考中 · 第二轮', '新一段只有它自己那一行');
+  assert.equal(composer.live, '⠋ 思考中 · 第二轮', '新一段只有它自己那一行');
 });
 
 test('思考预览：Run 一开就把上一轮遗留的半段收走（不能从旧思考尾巴后面长出来）', () => {
@@ -557,7 +558,7 @@ test('思考预览：Run 一开就把上一轮遗留的半段收走（不能从�
   renderer.printThinkingPreview('上一轮被打断的思考\n');
   bridge.handleEvent({ type: 'run_started', at: '2026-09-29T00:00:00.000Z', data: { text: 'hi' } });
   renderer.printThinkingPreview('这一轮的思考\n');
-  assert.equal(composer.live, '思考中 · 这一轮的思考');
+  assert.equal(composer.live, '⠋ 思考中 · 这一轮的思考');
 });
 
 test('printReasoning 灰显直出全文，不做 Markdown', () => {
@@ -853,7 +854,7 @@ test('setLiveQueue（composer）：排队行贴在实时区，与动态行合成
 
   const live = composer.live.replace(/\x1b\[[0-9;]*m/g, '');
   assert.deepEqual(live.split('\n'), [
-    '思考中',
+    '⠋ 思考中',
     '把第二章也写了   排队',
     '再补一段结尾   排队',
   ], '多条排队按 FIFO 各占一行，动态行在上');
@@ -921,4 +922,81 @@ test('setLiveQueue（管道）：新加入的条目直写一行，重复同步�
   const text = stdout.text();
   assert.equal(text.match(/第一条排队   排队/g).length, 1);
   assert.equal(text.match(/第二条排队   排队/g).length, 1);
+});
+
+// —— 运行态 spinner（ADR-0018）：全库唯一循环动效的生命周期 ——
+
+test('spinner：运行态动态行带帧字符，手动推进时钟帧就前进；文案不动', () => {
+  const composer = makeFakeComposer('写第二章');
+  const clock = makeManualClock();
+  const { renderer } = makeRenderer({ tty: true, env: { NO_COLOR: '1' }, composer, scheduleTick: clock.scheduleTick });
+
+  renderer.printActivity({ state: 'running', label: '读取文件 大纲.md' });
+  const frameOf = () => composer.live.replace(/\x1b\[[0-9;]*m/g, '').slice(0, 1);
+  assert.equal(frameOf(), SPINNER_FRAMES[0], '首帧立刻上屏');
+  assert.equal(composer.live.includes('读取文件 大纲.md'), true, '标签原样保留');
+
+  clock.step();
+  assert.equal(frameOf(), SPINNER_FRAMES[1], '推进一步，帧前进一格');
+  clock.step();
+  clock.step();
+  assert.equal(frameOf(), SPINNER_FRAMES[3], '推进三步，帧前进三格');
+
+  renderer.printStatus('已完成', { final: true, tone: 'success' });
+  assert.equal(clock.cancelled, 1, '终态把时钟收摊（终态 0 循环动效）');
+  const frozen = composer.live;
+  clock.step();
+  assert.equal(composer.live, frozen, '时钟收摊之后推进无效：实时区不再动');
+});
+
+test('spinner：正文写出（让位）即停；管道（无 composer）永不启动', () => {
+  const composer = makeFakeComposer('写第二章');
+  const clock = makeManualClock();
+  const { renderer } = makeRenderer({ env: { NO_COLOR: '1' }, composer, scheduleTick: clock.scheduleTick });
+
+  renderer.printStatus('思考中', { final: false });
+  assert.equal(clock.scheduled, 1, '运行态启动了唯一的时钟');
+  renderer.printAssistant('正文来了。\n');
+  assert.equal(clock.cancelled, 1, '让位写 scrollback：动态行没了，时钟跟着停');
+
+  const piped = makeManualClock();
+  const plain = makeRenderer({ env: { NO_COLOR: '1' }, scheduleTick: piped.scheduleTick });
+  plain.renderer.printStatus('思考中', { final: false });
+  assert.equal(piped.scheduled, 0, '管道没有实时区可重绘：不启动时钟');
+});
+
+test('spinner：close 兜底收摊；帧字符是字符不是颜色（NO_COLOR 照常）', () => {
+  const composer = makeFakeComposer();
+  const clock = makeManualClock();
+  const { renderer } = makeRenderer({ env: { NO_COLOR: '1' }, composer, scheduleTick: clock.scheduleTick });
+
+  renderer.printThinkingPreview('一段还没有换行的思考');
+  renderer.printThinkingPreview('\n');
+  assert.ok(composer.live.startsWith(`${SPINNER_FRAMES[0]} `), '思考预览标签行也带帧字符');
+  assert.equal(composer.live.includes('\x1b'), false, 'NO_COLOR 下没有颜色码，帧字符照常');
+
+  renderer.close();
+  assert.equal(clock.cancelled >= 1, true, '关闭路径兜底收摊');
+});
+
+test('挂起期间 endLive 作废去重记录：恢复后同一份动态行必须重新送达（不能被去重吞掉）', () => {
+  // 输入区让位（向导/选择器接管）时实时区随框一起消失；此刻发生的 endLive（Run 收敛、
+  // 清动态行）送达不了输入层——去重记录若还押着旧文本，恢复后同一份动态行再画出来
+  // 就会被它吞掉，输入层那侧永远收不到。作废记录 = 恢复后的第一次 refreshLive 必达。
+  const composer = makeFakeComposer('');
+  let active = true;
+  composer.isActive = () => active;
+  const { renderer } = makeRenderer({ env: { NO_COLOR: '1' }, composer });
+
+  renderer.printStatus('思考中', { final: false });
+  assert.equal(composer.calls.filter((call) => call === 'setLive:⠋ 思考中').length, 1);
+
+  active = false; // 挂起：refreshLive 从这里开始早退
+  renderer.clearLive(); // 挂起期间的收敛：清空指令到不了输入层
+  active = true; // 恢复：输入层的实时区已经是空的
+  renderer.printStatus('思考中', { final: false }); // 下一轮的同名动态行
+  assert.equal(
+    composer.calls.filter((call) => call === 'setLive:⠋ 思考中').length, 2,
+    '恢复后的重画必须重新送达，不能被挂起前的去重记录吞掉',
+  );
 });
