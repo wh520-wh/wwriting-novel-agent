@@ -979,6 +979,21 @@ test('spinner：close 兜底收摊；帧字符是字符不是颜色（NO_COLOR �
   assert.equal(clock.cancelled >= 1, true, '关闭路径兜底收摊');
 });
 
+test('spinner：自旋接续保持帧相位——接管的动态行不闪裸文案、不重新起帧', () => {
+  const composer = makeFakeComposer();
+  const clock = makeManualClock();
+  const { renderer } = makeRenderer({ tty: true, env: { NO_COLOR: '1' }, composer, scheduleTick: clock.scheduleTick });
+
+  renderer.printStatus('思考中', { final: false });
+  clock.step();
+  clock.step();
+  const phase = composer.live.replace(/\x1b\[[0-9;]*m/g, '').slice(0, 1);
+  renderer.printActivity({ state: 'running', label: '读取文件 大纲.md' });
+  assert.equal(clock.scheduled, 1, '自旋接续：不重复启动时钟');
+  assert.equal(composer.live.replace(/\x1b\[[0-9;]*m/g, '').slice(0, 1), phase, '帧相位延续，不回到首帧');
+  assert.ok(composer.live.includes('读取文件 大纲.md'), '新内容已按当前帧上屏');
+});
+
 test('挂起期间 endLive 作废去重记录：恢复后同一份动态行必须重新送达（不能被去重吞掉）', () => {
   // 输入区让位（向导/选择器接管）时实时区随框一起消失；此刻发生的 endLive（Run 收敛、
   // 清动态行）送达不了输入层——去重记录若还押着旧文本，恢复后同一份动态行再画出来

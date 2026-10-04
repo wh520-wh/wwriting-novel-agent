@@ -205,15 +205,10 @@ export function createRenderer({
     liveBody = paint(clipLive(spinText(spinBase.text, SPINNER_FRAMES[spinnerFrame])), spinBase.tone);
   }
 
+  // 时钟只负责「推进」：起帧与上色都在 drawLive 里完成（它手里正好有新内容，
+  // 一次上色、一次刷新）。已在自旋时这里是 no-op，帧相位照旧延续。
   function spinnerStart() {
-    if (closed || hook === null || spinBase === null) return;
-    if (spinnerCancel !== null) {
-      paintSpin(); // 已在自旋：换了一行自旋内容，立刻以当前帧重画，不让裸文案闪一帧
-      refreshLive();
-      return;
-    }
-    spinnerFrame = 0;
-    paintSpin();
+    if (closed || hook === null || spinBase === null || spinnerCancel !== null) return;
     spinnerCancel = scheduleTick(() => {
       spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
       if (closed || liveBody === null || spinBase === null) {
@@ -223,7 +218,6 @@ export function createRenderer({
       paintSpin();
       refreshLive(); // 帧字符变了，去重不会吞掉这次重绘
     }, SPINNER_INTERVAL_MS);
-    refreshLive(); // 首帧立刻上屏（原本那行还是 • / 无标记的样子）
   }
 
   function spinnerStop() {
@@ -245,19 +239,23 @@ export function createRenderer({
     // 宽度闸门（缺陷猎捕报告 7）：实时区一行都不许超宽，按行截断保持行数语义；
     // 完成后落 scrollback 的那一行不经过这里，仍是全文。
     const clipped = clipLive(text);
-    const body = paint(clipped, tone);
     const kept = lastActivity;
     if (hook !== null) {
       liveOpen = true;
       lastActivity = kept;
-      liveBody = body;
       spinBase = spin ? { text: clipped, tone } : null;
-      if (spin) spinnerStart();
+      if (spin) {
+        if (spinnerCancel === null) spinnerFrame = 0; // 新一轮自旋从头起帧；接续自旋保持相位
+        paintSpin(); // 自旋行一律按当前帧上色，不存在「裸文案闪一帧」
+        spinnerStart();
+      } else {
+        liveBody = paint(clipped, tone);
+      }
       refreshLive(); // 输入区没激活时它自己退回：内容先攒着
       return;
     }
     if (liveOpen) write(ERASE_LINE);
-    write(body);
+    write(paint(clipped, tone));
     liveOpen = true;
     lastActivity = kept;
   }
