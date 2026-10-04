@@ -672,6 +672,45 @@ test('折行输入且光标在行中时，下框线画在最后一格物理行�
   stdin.end();
 });
 
+test('连续打字折行时下框线跟着走：快速回显不重绘也不许把框线顶穿（真机 ConPTY 走查发现）', async () => {
+  // readline 的「行尾追加」快速路径逐字回显、不经过 _refreshLine：正文折上新物理行时
+  // 下框线还留在旧位置——正文把框线残段顶得和正文挤在同一行，回车后这帧永久留在滚动
+  // 历史。输入层在快速回显的出口上按行数变化补线：行数没变一个字节都不动；变了先清
+  // 残段再按新几何画线。退格（缩回方向）走整行重绘，由既有刷新路径自愈，不在此列。
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' }, onSubmit: () => {} });
+  reader.start();
+  await tick();
+  const lines = () => screenText(stdout.text(), { cols: 80, rows: 40 }).split('\n');
+
+  stdin.write('汉'.repeat(40)); // 提示符 2 列 + 80 列 → 第 40 个字把正文折上第 2 格物理行
+  await tick();
+
+  let rows = lines();
+  assert.ok(rows.every((line) => !(line.includes('汉') && line.includes('─'))),
+    `正文与旧框线残段不得挤在同一行：${JSON.stringify(rows)}`);
+  const lastTextRow = rows.reduce((found, line, index) => (line.includes('汉') ? index : found), -1);
+  assert.match(rows[lastTextRow + 1] ?? '', /^\s*─+$/, '下框线必须紧跟最后一格物理行');
+
+  stdin.write('灯'); // 再补一个字：框线跟着挪，依旧干净
+  await tick();
+  rows = lines();
+  assert.ok(rows.every((line) => !(line.includes('灯') && line.includes('─'))),
+    `补字后正文与框线残段不得挤在同一行：${JSON.stringify(rows)}`);
+
+  stdin.write('\x7f\x7f'); // 退格缩回 1 格物理行：框线回到上一格之下，不许残留第二条框线
+  await tick();
+  rows = lines();
+  const ruleRows = rows.filter((line) => /^\s*─+\s*$/.test(line)).length;
+  const textRows = rows.filter((line) => line.includes('汉')).length;
+  assert.equal(textRows, 1, `缩回后正文只剩一格物理行：${JSON.stringify(rows)}`);
+  assert.equal(ruleRows, 2, `上下各一条框线，不得多残一条：${JSON.stringify(rows)}`);
+
+  reader.stop();
+  stdin.end();
+});
+
 test('折行粘贴后光标回行首再补字：旧帧不残留，下框线紧贴最后一行（真机 ConPTY 缺陷回归）', async () => {
   // readline 的「行尾追加」快速路径会把整段粘贴直接回显到屏幕（不经过 _refreshLine），
   // 真实光标随折行下沉而行模型不知情；Ctrl+A 把模型光标拉回行首后，下一次重绘从块中

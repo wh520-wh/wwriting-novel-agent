@@ -149,6 +149,9 @@ export function createInputReader({
   // 输入区此刻画在屏幕上吗？框上方那一行的实时状态是什么？
   let areaDrawn = false;
   let liveText = null;
+  // 下框线最后一次补画时的输入物理行数（paintBelowPrompt 维护）。快速回显路径靠
+  // 「当前行数 ≠ 它」发现框线没跟上折行（真机 ConPTY 走查发现的顶穿残留）。
+  let paintedRows = 0;
   // suspend 前带走的半行草稿（缺陷猎捕报告 3）。suspend 会真的关掉 readline：
   // 已键入的半行既不在缓冲也不在历史里，不显式承接就是无声销毁——屏幕上和缓冲里双双消失。
   // 恢复时原样写回（含光标位置）。带控制字符的半行不接（会被 readline 当按键解释，比如
@@ -185,13 +188,18 @@ export function createInputReader({
   // 输入行的最后一格物理行再画线，否则框线压在正文第 2 格上把字盖掉（复核新发现，
   // 与猎捕报告 5 同族：报告只点名了擦除侧，补线侧同一假设）。down === 0（光标在最后一格，
   // 绝大多数敲字路径）保持既有字节序列逐字不变。
-  function paintBelowPrompt() {
+  // clearBelow：画线**之前**先在新框线行的行首清屏到底——快速回显补线用。退格/变列之后
+  // 旧框线可能留在更下方的物理行上，不抹掉就是第二条框线；放画线前且光标在行首，也避开
+  // 「满行待换行时 \x1b[J 从框线末格开抹」的坑。常规重绘路径不需要（readline 刚清过屏）。
+  function paintBelowPrompt({ clearBelow = false } = {}) {
     if (!areaDrawn || rl === null) return;
     const { totalRows, cursorRow } = inputLayout();
     const down = Math.max(0, totalRows - cursorRow);
+    const clear = clearBelow ? '\x1b[J' : '';
     writeOut(down > 0
-      ? `\r\x1b[${down}B\r\n${rule()}\r\x1b[${down + 1}A\x1b[${cursorColumn()}G`
-      : `\r\n${rule()}\r\x1b[1A\x1b[${cursorColumn()}G`);
+      ? `\r\x1b[${down}B\r\n${clear}${rule()}\r\x1b[${down + 1}A\x1b[${cursorColumn()}G`
+      : `\r\n${clear}${rule()}\r\x1b[1A\x1b[${cursorColumn()}G`);
+    paintedRows = totalRows;
   }
 
   // 实时区占几**物理行**。多数时候是 1（`思考中` 这种一行状态），思考预览是 2 行；
@@ -281,6 +289,17 @@ export function createInputReader({
         if (!inRefresh && typeof string_ === 'string' && !string_.includes('\u001b') && rl !== null) {
           const lineLength = typeof rl.line === 'string' ? rl.line.length : 0;
           realCursor = Math.min(lineLength, realCursor + string_.length);
+          // 快速回显补线（真机 ConPTY 走查发现）：行尾打字/粘贴逐字回显，正文折上新物理行
+          // 却不经过 _refreshLine，下框线留在旧位置被正文顶穿，残段和正文挤在同一行。
+          // 行数没变一个字节都不动；变了先从光标处清掉本行残段，再按新几何把框线画回
+          // 最后一格物理行之下。退格（缩回方向）走整行重绘，由刷新路径自愈，到不了这里。
+          if (areaDrawn) {
+            const { totalRows } = inputLayout();
+            if (totalRows !== paintedRows) {
+              writeOut('\x1b[K');
+              paintBelowPrompt({ clearBelow: true });
+            }
+          }
         }
       };
     }
