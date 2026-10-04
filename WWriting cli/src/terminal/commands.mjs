@@ -215,10 +215,13 @@ export function createCommandHandler({
   }
 
   // 普通输入：交给同一个 run controller。绝不 await —— 输入框在 Agent 跑的时候必须可用（D15）。
-  function submit(text) {
+  // immediate（Ctrl+S）与回车共用同一个错误收口：两个入口的抛错都收敛成「提交失败」一条中文事实。
+  function submit(text, { immediate = false } = {}) {
     if (echoUser) renderer.printUser(text);
     Promise.resolve()
-      .then(() => getController().submit({ text }))
+      .then(() => (immediate
+        ? getController().submitNow({ text })
+        : getController().submit({ text })))
       .catch((error) => reply('提交失败', { tone: 'error', detail: fact(error) }));
   }
 
@@ -746,7 +749,7 @@ export function createCommandHandler({
     if (typeof quit === 'function') await quit();
   }
 
-  async function handle(text) {
+  async function handle(text, { immediate = false } = {}) {
     if (typeof text !== 'string') return { action: 'ignored' };
     const trimmed = text.trim();
     if (trimmed === '') return { action: 'ignored' };
@@ -765,7 +768,8 @@ export function createCommandHandler({
     const parsed = parseSlashCommand(trimmed);
     if (parsed === null || parsed.name === 'init') {
       // 提交的是 trimmed（整行原文），不是 parsed?.name：附加要求必须一字不落跟着走。
-      submit(trimmed);
+      // immediate（Ctrl+S）只对普通正文有意义——/init 与回车完全同路（工单 03）。
+      submit(trimmed, { immediate });
       return { action: 'submit' };
     }
 

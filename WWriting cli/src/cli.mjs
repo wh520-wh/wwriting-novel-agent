@@ -62,7 +62,7 @@ const NOT_INTERACTIVE_FACT = '需要在一个可交互的终端里运行，请�
 
 // 头部面板的两句固定文案：副标题说明这是什么，提示行说明第一屏能做什么。
 const PANEL_SUBTITLE = '长篇写作智能体';
-const PANEL_HINT = '直接输入开始写作 · /help 查看命令 · Ctrl+C 停止当前轮 · Shift+Tab 切换权限模式';
+const PANEL_HINT = '直接输入开始写作 · /help 查看命令 · Ctrl+C 停止当前轮 · Shift+Tab 切换权限模式 · Ctrl+S 立即发送';
 
 // 命令主入口。io 至少包含 { stdin, stdout, stderr, env, cwd }，注入后可在无 TTY 环境测试。
 // 返回退出码数字；仅在真实进程入口处写入 process.exitCode。
@@ -117,7 +117,10 @@ export async function main(
     env: io.env,
     commands: HELP_COMMANDS.map(([name]) => name),
     // 不 await：controller.submit() 会等到本轮 + 队列 drain 结束，await 会把输入框堵死（D15）。
-    onSubmit: (text) => { void (text.trim() === '/' ? chooseCommand() : handler.handle(text)); },
+    // immediate（Ctrl+S）原样透传：命令草稿与回车完全同路，「立即」只作用于普通正文。
+    onSubmit: (text, { immediate = false } = {}) => {
+      void (text.trim() === '/' ? chooseCommand() : handler.handle(text, { immediate }));
+    },
     onControl: (name) => { void handler.handleControl(name); },
   });
 

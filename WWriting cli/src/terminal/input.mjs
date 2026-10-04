@@ -121,8 +121,10 @@ export async function readOneLine({
   }
 }
 
-// createInputReader({ stdin, stdout, onSubmit, onControl, stderr, env, prompt })
-//   onSubmit(text)     回车后的整行原文（未 trim；空行不触发）
+// createInputReader({ stdin, stdout, onSubmit, onControl, stderr, env, prompt, commands })
+//   onSubmit(text, { immediate })  回车后的整行原文（未 trim；空行不触发）。
+//                                  immediate=true 表示这次提交来自 Ctrl+S（「立即」语义在
+//                                  控制器，输入层只负责把标记原样交出去）
 //   onControl(name)    'interrupt'（Ctrl+C）| 'eof'（输入结束）| 'mode-cycle'（Shift+Tab）
 // 返回 { start, stop, suspend, resume, composer }。
 //   start({ initialText }) 返回 { interactive, reason }；initialText 会像用户亲手敲的一样
@@ -327,12 +329,13 @@ export function createInputReader({
   }
 
   // Shift+Tab（\x1b[Z，Node 归一为 { name:'tab', shift:true }）：切换权限模式（ADR-0020）。
-  // 必须赶在 readline 内部消费**之前**拦下：配了 completer 时 Shift+Tab 与 Tab 一样触发
-  // 命令补全（实测），短路掉就不会。包私有方法与 attachAreaHooks 同一纪律；拿不到
+  // Ctrl+S（\x13，raw 模式下 readline 对它静默忽略）：立即提交当前草稿（工单 03）。
+  // 两者都必须赶在 readline 内部消费**之前**拦下：配了 completer 时 Shift+Tab 与 Tab 一样
+  // 触发命令补全（实测），短路掉就不会。包私有方法与 attachAreaHooks 同一纪律；拿不到
   // _ttyWrite 这个入口（非 TTY / 老版本）就退化成既有行为，不影响输入本身。
   // 与 Enter 触发 /model 向导同一调用栈深度：控制回调里可能同步 suspend（真关 readline），
   // 这条路今天每一条斜杠命令都在走，不是新风险。
-  function attachModeKeyHook(instance) {
+  function attachKeysHook(instance) {
     if (typeof instance._ttyWrite !== 'function') return;
     const ttyWrite = instance._ttyWrite.bind(instance);
     instance._ttyWrite = (s, key) => {
@@ -340,8 +343,49 @@ export function createInputReader({
         emitControl('mode-cycle');
         return;
       }
+      if (key && key.ctrl === true && key.name === 's') {
+        submitImmediate();
+        return;
+      }
       ttyWrite(s, key);
     };
+  }
+
+  // 提交簿记：回车（line 事件）与 Ctrl+S 共用同一份——擦框、越过框沿、回调、重画框。
+  // 两路只有一个差别：回车的换行回显由 readline 自己写过了，Ctrl+S 由调用方先补。
+  // 空行（trim 后为空）一律丢弃，绝不当一次提交送进 Agent；框原样画回来。
+  function emitSubmission(text, { immediate = false } = {}) {
+    const hadBox = areaDrawn;
+    areaDrawn = false;
+    liveText = null;
+    if (text.trim() === '') {
+      promptOnce();
+      return;
+    }
+    // 走出框的下沿，之后的输出从这条线下面开始（屏幕上一个空行都不用留）。
+    if (hadBox) writeOut('\n');
+    if (typeof onSubmit === 'function') onSubmit(text, { immediate });
+    // 输入框在 Agent 跑的时候照样可用（提交是 fire-and-forget，不阻塞这里）；
+    // 渲染器接下来写内容时会先 takeArea()，所以这里先把框画回来不会打架。
+    promptOnce();
+  }
+
+  // Ctrl+S：把当前草稿按「立即」语义交出去。拦截发生在 readline 消费 \x13 之前，
+  // 行模型与屏幕都还停在草稿上——屏幕簿记按回车接受时的同一套走：光标先到行尾
+  // （整行重绘，与 readline 的 accept 一致），自己补换行回显，再走共用簿记。
+  // 空草稿（含纯空白）无操作且不动屏幕：空判先于一切。
+  function submitImmediate() {
+    if (rl === null || !interactive) return;
+    const line = typeof rl.line === 'string' ? rl.line : '';
+    if (line.trim() === '') return;
+    if (Number.isInteger(rl.cursor) && rl.cursor !== line.length) {
+      rl.cursor = line.length;
+      refreshLine();
+    }
+    writeOut('\r\n');
+    rl.line = '';
+    rl.cursor = 0;
+    emitSubmission(line.replace(/\r+$/, ''), { immediate: true });
   }
 
   // 给渲染器用的输入区协作钩子。非交互（管道）时 isActive() 为 false，渲染器走顺序直写。
@@ -395,26 +439,13 @@ export function createInputReader({
       completer: (line) => [commands.filter((name) => name.startsWith(line)), line],
     });
     attachAreaHooks(rl);
-    attachModeKeyHook(rl);
+    attachKeysHook(rl);
 
     rl.on('line', (line) => {
-      // readline 已剥掉行尾；非 TTY 管道里仍可能有残留 \r。
+      // readline 已剥掉行尾；非 TTY 管道里仍可能有残留 \r。回车这一刻 readline 已经
+      // 换行（框的下沿留在屏幕上），提交簿记与 Ctrl+S 共用 emitSubmission。
       const text = typeof line === 'string' ? line.replace(/\r+$/, '') : '';
-      // 回车这一刻 readline 已经换行：框的下沿留在屏幕上，光标停在它下面那一格。
-      const hadBox = areaDrawn;
-      areaDrawn = false;
-      liveText = null;
-      if (text.trim() === '') {
-        // 空行一律丢弃：绝不能把空消息当一次提交送进 Agent。框直接在原处画回来。
-        promptOnce();
-        return;
-      }
-      // 走出框的下沿，之后的输出从这条线下面开始（屏幕上一个空行都不用留）。
-      if (hadBox) writeOut('\n');
-      if (typeof onSubmit === 'function') onSubmit(text);
-      // 输入框在 Agent 跑的时候照样可用（提交是 fire-and-forget，不阻塞这里）；
-      // 渲染器接下来写内容时会先 takeArea()，所以这里先把框画回来不会打架。
-      promptOnce();
+      emitSubmission(text);
     });
 
     // 有 SIGINT 监听时 readline 不会自行关闭，Ctrl+C 完全交给我们处理。

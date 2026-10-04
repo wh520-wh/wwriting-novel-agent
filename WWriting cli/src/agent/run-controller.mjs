@@ -594,6 +594,52 @@ export function createRunController({
     return { inputId: promoted.input_id, promoted: true, interrupted: false };
   }
 
+  // 「立即」提交（Ctrl+S）：草稿本身成为下一条活动输入。与 requestPriority（/now）共用
+  // 提升 + 打断 + 单一 drain 的原语，区别只在入口——/now 提升队首已有输入，这里提交
+  // 刚打好的草稿。细分（规格 2026-10-05，对抗审查收口后）：
+  //   · 忙碌（活动轮或 drain 在跑，含轮间隙）：入队 + 提到队首 + 打断当前轮（有活动轮时），
+  //     同一个 drain 接手；
+  //   · 空闲但队列非空（/stop 后残留）：入队 + 提到队首 + **补启动消费**——按「与回车相同」
+  //     处理会排到队尾，违背「立即」承诺；
+  //   · 空闲且队列空：与 submit 完全同一条路。
+  // 硬要求：入队（input_queued）与提升（input_promoted）必须同一写入任务——单独写
+  // promoted 对投影是空操作、对原语是抛错，草稿会无声丢失；abort 紧随提升之后，
+  // 中间不得插入可被自然完成穿插的等待。错误由调用方整体 catch 收敛成一条中文事实。
+  async function submitNow({ text } = {}) {
+    const handle = requireOpen('立即提交输入');
+    if (typeof text !== 'string' || text.trim() === '') {
+      throw new Error('输入内容不能为空。');
+    }
+    if (!isBusy() && handle.projection.queue.length === 0) {
+      return submit({ text });
+    }
+    const inputId = await serializeWrite(async () => {
+      stopped = false;
+      const queued = await handle.enqueue({ text });
+      const promoted = await handle.promote(queued.input_id);
+      return promoted.input_id;
+    });
+    if (active) {
+      // 打断是为了跑被提升的输入，不是停止：drain 会继续跑队首（与 requestPriority 同语义）。
+      if (typeof perm.clearInput === 'function') perm.clearInput();
+      active.controller.abort();
+      return { inputId, queued: true, promoted: true, interrupted: true, result: null };
+    }
+    if (draining) {
+      // drain 间隙（上一轮已终、循环还活着）：下一轮迭代自然消费队首，不并起第二个 drain。
+      return { inputId, queued: true, promoted: true, interrupted: false, result: null };
+    }
+    // 空闲且 drain 已停：提升后无人接手，这里补启动——先跑这一条，再按 FIFO 消化残留队列。
+    const next = session.projection.queue[0];
+    const running = drain(next.input_id, next.text);
+    drainTask = running;
+    try {
+      return { inputId, queued: true, promoted: true, interrupted: false, result: await running };
+    } finally {
+      if (drainTask === running) drainTask = null;
+    }
+  }
+
   // 确认：代收用户在确认卡上的选择（一次允许 / 本条输入允许同类操作 / 拒绝 / 极端确认文字）。
   async function decide(options = {}) {
     requireOpen('处理确认');
@@ -670,5 +716,5 @@ export function createRunController({
     return { status: 'ok', chars: text.length, turns: uncovered.length };
   }
 
-  return { open, submit, retry, stop, requestPriority, decide, snapshot, isBusy, activeRunId, readEvents, compact, close, permissions: perm };
+  return { open, submit, submitNow, retry, stop, requestPriority, decide, snapshot, isBusy, activeRunId, readEvents, compact, close, permissions: perm };
 }

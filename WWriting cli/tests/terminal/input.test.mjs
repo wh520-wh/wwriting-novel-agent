@@ -772,3 +772,70 @@ test('折行粘贴后光标回行首再补字：旧帧不残留，下框线紧�
   reader.stop();
   stdin.end();
 });
+
+test('Ctrl+S：立即提交当前草稿——onSubmit 带 immediate 标记、草稿清空、空框画回', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const submissions = [];
+  const reader = createInputReader({
+    stdin, stdout, env: {},
+    onSubmit: (text, options) => submissions.push([text, options]),
+  });
+  reader.start();
+  try {
+    stdin.write('写第一章');
+    await tick();
+    stdin.write('\x13');
+    await tick();
+    assert.deepEqual(submissions, [['写第一章', { immediate: true }]],
+      'Ctrl+S 原样上交草稿与立即标记');
+    const screen = screenText(stdout.text());
+    assert.ok(!screen.includes('\x13'), '拦截必须发生在 readline 消费之前：\x13 不进草稿');
+    assert.match(screen, /❯ 写第一章\n\s*─{20,}\n\s*─{20,}\n❯ *\n\s*─{20,}$/,
+      '旧行留在历史里，新框照常画回');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('Ctrl+S：空白草稿无操作——不提交、一个字节都不写', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const submissions = [];
+  const reader = createInputReader({ stdin, stdout, env: {}, onSubmit: (text) => submissions.push(text) });
+  reader.start();
+  try {
+    stdin.write('   ');
+    await tick();
+    const before = stdout.text();
+    stdin.write('\x13');
+    await tick();
+    assert.deepEqual(submissions, [], '空白草稿不触发提交');
+    assert.equal(stdout.text(), before, '空判先于一切：屏幕纹丝不动');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('Ctrl+S：光标在行中时整行原样提交（先到行尾再接受，与回车同状态）', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const submissions = [];
+  const reader = createInputReader({ stdin, stdout, env: {}, onSubmit: (text) => submissions.push(text) });
+  reader.start();
+  try {
+    stdin.write('写第一章啊');
+    await tick();
+    stdin.write('\x01'); // Ctrl+A：光标回行首
+    await tick();
+    stdin.write('\x13');
+    await tick();
+    assert.deepEqual(submissions, ['写第一章啊'], '整行原文提交，不留半截残段');
+    const lines = screenText(stdout.text(), { cols: 80, rows: 40 }).split('\n');
+    const promptLines = lines.filter((line) => line.includes('❯ 写'));
+    assert.equal(promptLines.filter((line) => line.trim() !== '❯ 写第一章啊').length, 0,
+      `历史里那行必须完整：${JSON.stringify(lines)}`);
+  } finally {
+    reader.stop();
+  }
+});

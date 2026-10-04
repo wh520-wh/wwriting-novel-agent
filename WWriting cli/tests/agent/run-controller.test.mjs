@@ -1570,3 +1570,83 @@ test('retry：运行中拒绝；停止后队列非空也拒绝（重试不插队
     await controller.close();
   }
 });
+
+test('立即提交（Ctrl+S）：忙碌时草稿插队首并打断当前轮，同一 drain 接手', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-submitnow-');
+  const projectRoot = path.join(root, 'novel');
+  const loop = makeLoopFactory({ script: ['hold'] });
+  const { controller } = await makeController({ root, projectRoot, agentLoopFactory: loop.factory });
+
+  try {
+    const first = controller.submit({ text: '第一条' });
+    await waitFor(() => controller.snapshot().active_run_id !== null, { label: '第一轮开始' });
+
+    const outcome = await controller.submitNow({ text: '立即这句' });
+    assert.equal(outcome.promoted, true);
+    assert.equal(outcome.interrupted, true);
+    await first;
+
+    // 同一个 drain 接手：被打断轮之后紧接着就是草稿这一条，绝不并起第二个 Agent。
+    assert.deepEqual(loop.runs.map((run) => run.text), ['第一条', '立即这句']);
+    assert.equal(loop.stats().maxConcurrent, 1);
+    const events = await loop.events();
+    // 入队与提升两个事件都必须在（同一写入任务）——单独写 promoted 会无声丢草稿。
+    assert.ok(
+      events.some((event) => event.type === 'input_queued' && event.data.text === '立即这句'),
+      'input_queued 必须落盘',
+    );
+    assert.deepEqual(
+      events.filter((event) => event.type === 'input_promoted').map((event) => event.data.input_id),
+      [outcome.inputId],
+    );
+    assert.deepEqual(
+      events.filter((event) => event.type === 'run_interrupted').map((event) => event.data.reason),
+      ['user_stop'],
+    );
+  } finally {
+    await controller.close();
+  }
+});
+
+test('立即提交：停止后队列残留时插到队首并补启动消费，不排到队尾', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-submitnow-idle-');
+  const projectRoot = path.join(root, 'novel');
+  const loop = makeLoopFactory({ script: ['hold'] });
+  const { controller } = await makeController({ root, projectRoot, agentLoopFactory: loop.factory });
+
+  try {
+    const first = controller.submit({ text: '第一条' });
+    await waitFor(() => controller.snapshot().active_run_id !== null, { label: '第一轮开始' });
+    await controller.submit({ text: '第二条' });
+    await controller.stop();
+    await first;
+    await waitFor(() => controller.isBusy() === false, { label: '控制器空闲' });
+    assert.equal(controller.snapshot().queue.length, 1, '前置：停止后队列里还有残留输入');
+
+    const outcome = await controller.submitNow({ text: '插队这句' });
+    assert.equal(outcome.promoted, true);
+    assert.equal(outcome.interrupted, false, '空闲态没有可打断的轮');
+    // 插队这句先跑，残留队列按 FIFO 跟上——不是排到队尾。
+    assert.deepEqual(loop.runs.map((run) => run.text), ['第一条', '插队这句', '第二条']);
+    assert.equal(loop.stats().maxConcurrent, 1);
+  } finally {
+    await controller.close();
+  }
+});
+
+test('立即提交：空闲空队列与回车完全同路；空白草稿被拒（与回车丢弃闸同源）', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-submitnow-empty-');
+  const projectRoot = path.join(root, 'novel');
+  const loop = makeLoopFactory({});
+  const { controller } = await makeController({ root, projectRoot, agentLoopFactory: loop.factory });
+
+  try {
+    const outcome = await controller.submitNow({ text: '第一章' });
+    assert.equal(outcome.queued, false);
+    assert.equal(outcome.result.status, 'completed');
+    assert.deepEqual(loop.runs.map((run) => run.text), ['第一章']);
+    await assert.rejects(() => controller.submitNow({ text: '   ' }), /输入内容不能为空/);
+  } finally {
+    await controller.close();
+  }
+});
