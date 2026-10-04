@@ -130,7 +130,6 @@ export function createSelector({ stdin, stdout, env = process.env, color } = {})
     stdout.write(ERASE_LINE);
     ledger.writeBlock(block);
 
-    const wasRaw = stdin.isRaw === true;
     // 流是否已经在流动：菜单要 resume() 才能收到按键，但结束之后必须还回去——
     // 引导结束到对话面 readline 建立之间有一段空窗，此时若流还在 flowing，
     // 写进来的输入会因为没有 'data' 监听者而被直接丢掉（真实踩到：引导后第一条消息丢失）。
@@ -151,11 +150,11 @@ export function createSelector({ stdin, stdout, env = process.env, color } = {})
     return new Promise((resolve) => {
       const finish = (result, summaryLine) => {
         stdin.removeListener('keypress', onKey);
-        try {
-          stdin.setRawMode(wasRaw);
-        } catch {
-          // 恢复失败不影响结果，忽略。
-        }
+        // 这里**刻意不恢复** raw 模式（曾按 wasRaw 恢复，真机 ConPTY 走查发现会吞键）：
+        // 「raw false→true」紧挨着输出活动翻转时，宿主会丢掉恢复后第一波按键——
+        // 而本应用里 ask() 结束后只有两条路：紧跟新建 readline（构造函数自己会设 raw=true），
+        // 或 rl.close()（Node 关闭时自己翻回 raw=false，退出路径的卫生由它兜住）。
+        // 两条路都不需要这里代劳，少一次翻转就没有竞态。
         if (!wasFlowing && typeof stdin.pause === 'function') stdin.pause();
         stdout.write(SHOW_CURSOR);
         ledger.collapse(summaryLine);

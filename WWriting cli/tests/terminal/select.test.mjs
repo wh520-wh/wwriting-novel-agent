@@ -153,8 +153,11 @@ test('ask：↓ 移动光标、回车确认，选中项收成一行摘要', asyn
   assert.ok(text.includes(`${MENU_CURSOR} 乙`), '移动后光标到第二项');
   assert.ok(text.includes('已选：乙'), '收尾压成一行摘要进 scrollback');
   assert.ok(text.includes('\x1b[J'), '块的多余行被抹掉');
-  assert.deepEqual(stdin.rawCalls, [true, false], 'raw 模式开了要还回去');
-  assert.equal(stdin.isRaw, false);
+  // 契约（真机 ConPTY 走查改定）：选择器只在进入时开一次 raw，结束**不得**自行翻回——
+  // 「false→true」紧挨输出活动翻转会吞掉宿主的第一波按键；后续 raw 的开关归
+  // 下一个 readline 的构造（true）与 rl.close()（false）管，两条路都覆盖。
+  assert.deepEqual(stdin.rawCalls, [true], '选择器结束后不得再翻 raw 模式');
+  assert.equal(stdin.isRaw, true);
 });
 
 test('ask：数字键直选并立刻确认', async () => {
@@ -181,7 +184,8 @@ test('ask：Esc 取消返回 null，并按 cancelSummary 收尾', async () => {
 
   assert.equal(await pending, null);
   assert.ok(stdout.text().includes('（已跳过）'));
-  assert.equal(stdin.isRaw, false, '取消也要还回 raw 模式');
+  // 取消路径同样不翻 raw（真机 ConPTY 吞键竞态，见 ask 确认路径那条契约）。
+  assert.deepEqual(stdin.rawCalls, [true]);
 });
 
 test('ask：Ctrl+C 等同取消（不把用户困在菜单里）', async () => {
