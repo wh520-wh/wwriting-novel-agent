@@ -26,6 +26,7 @@
 | [0017](./0017-plan-lives-in-live-area-panel-plus-scrollback.md) | 任务计划在终端 = 实时区常驻面板 / chip + 滚动区全表 |
 | [0018](./0018-terminal-motion-discipline.md) | 终端动效纪律 = 唯一受控 spinner，运行态才推进，终态 0 循环动效 |
 | [0019](./0019-prose-vertical-rhythm.md) | 正文垂直节奏 = 致密块矩阵 + 正文→UI 单空行，模型原文空行照旧透传 |
+| [0020](./0020-permission-mode-shift-tab.md) | Shift+Tab 二态环切换权限模式（普通 ↔ YOLO），进 YOLO 需确认卡，仅空闲可切 |
 
 > 0006–0008 是 `WWRITING.md` 项目记忆的设计决策（铁律 7）。并发写语义已随 Q12 拍板（最后写者赢，
 > 防线是确认卡显示变更）；`/init` 更新契约经 2026-09-28 对抗性审查收敛为

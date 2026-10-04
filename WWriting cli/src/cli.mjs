@@ -40,6 +40,8 @@ import { createDecisionCard } from './terminal/decisions.mjs';
 import { createMenuPicker, sessionPickerItems } from './terminal/pickers.mjs';
 import { createSelector } from './terminal/select.mjs';
 import { STEP_HINT, createOnboarding } from './terminal/onboarding.mjs';
+// 权限模式警示 chip 的文案只有一份：style.mjs（ADR-0020）。
+import { YOLO_CHIP } from './terminal/style.mjs';
 
 const EXIT_OK = 0;
 // 启动 / 运行期故障：只呈现一条中文事实。
@@ -60,7 +62,7 @@ const NOT_INTERACTIVE_FACT = '需要在一个可交互的终端里运行，请�
 
 // 头部面板的两句固定文案：副标题说明这是什么，提示行说明第一屏能做什么。
 const PANEL_SUBTITLE = '长篇写作智能体';
-const PANEL_HINT = '直接输入开始写作 · /help 查看命令 · Ctrl+C 停止当前轮';
+const PANEL_HINT = '直接输入开始写作 · /help 查看命令 · Ctrl+C 停止当前轮 · Shift+Tab 切换权限模式';
 
 // 命令主入口。io 至少包含 { stdin, stdout, stderr, env, cwd }，注入后可在无 TTY 环境测试。
 // 返回退出码数字；仅在真实进程入口处写入 process.exitCode。
@@ -317,6 +319,21 @@ export async function main(
     return EXIT_RUNTIME_ERROR;
   }
 
+  // 权限模式的会话内状态（ADR-0020：跟会话走，不持久化；/resume 换控制器时重置为普通）。
+  // 真相只有这一份：翻转时同步写入当前控制器的权限层（permissions.setYolo——YOLO 在
+  // permissions.mjs 里只跳过 write 级确认，extreme 与项目外不放行，语义不在这里改），
+  // 并同步实时区的警示 chip：它是「下一次输入将以什么权限执行」的常驻告示。
+  let permissionYolo = false;
+  const permissionMode = {
+    get: () => (permissionYolo ? 'yolo' : 'normal'),
+    set(value) {
+      permissionYolo = value === 'yolo';
+      // 控制器尚未打开时只记状态：输入层在控制器开好之后才启动，Shift+Tab 进不到那条路。
+      if (controller !== null) controller.permissions?.setYolo?.(permissionYolo);
+      renderer.setLiveMode(permissionYolo ? YOLO_CHIP : null);
+    },
+  };
+
   // /resume：控制器的 sessionId 是构造期固定的，切换会话只能「开新控制器 → 换掉旧的」。
   async function switchSession(sessionId) {
     const current = controller;
@@ -326,6 +343,9 @@ export async function main(
     // 先开新的：新会话打不开时旧会话原样可用，不做「先关后开」的半途状态。
     const next = await openController(sessionId);
     controller = next;
+    // 权限弱化状态不跨会话（ADR-0020）：新控制器的权限层默认就是普通，这里把会话内
+    // 状态也拉回来（chip 同步收掉）——用户对着新会话不该被上一会话的 YOLO 静默罩着。
+    permissionMode.set('normal');
     if (current !== null) {
       current.stop(); // D18：先停当前轮
       await current.close(); // 再释放旧会话的写锁——旧轮的终态事件在这里全部处理完
@@ -474,6 +494,9 @@ export async function main(
     effort: effortState,
     // 事件桥持有本次进程内的思考正文；命令层只取值，不持有状态。
     getReasoning: () => bridge.lastReasoning(),
+    // Shift+Tab 的权限模式状态与进入 YOLO 的确认卡（让位选择器），都由命令层消费（ADR-0020）。
+    permissionMode,
+    pick,
     model: {
       configPath,
       env: io.env,

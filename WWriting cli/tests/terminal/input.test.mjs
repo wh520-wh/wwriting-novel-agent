@@ -67,6 +67,33 @@ test('Tab 补全命令仍留在唯一输入框内，替换草稿不触发发送'
   }
 });
 
+test('Shift+Tab 不触发补全，作为 mode-cycle 控制事件上报（ADR-0020）', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const submitted = [];
+  const controls = [];
+  const reader = createInputReader({ stdin, stdout, env: {}, commands: ['/model', '/resume'],
+    onSubmit: (text) => submitted.push(text),
+    onControl: (name) => controls.push(name) });
+  reader.start();
+  try {
+    // 同一批字节里带着待补全的前缀：没有拦截的话 Shift+Tab 会把 /mo 补成 /model（实测行为）。
+    stdin.write('/mo\x1b[Z');
+    await tick();
+    const screen = screenText(stdout.text());
+    assert.ok(screen.includes('❯ /mo'), `草稿保持原样：${screen}`);
+    assert.ok(!screen.includes('❯ /model'), `绝不能触发命令补全：${screen}`);
+    assert.deepEqual(controls, ['mode-cycle']);
+    assert.deepEqual(submitted, []);
+    // 普通按键照常透传：拦截层不能吞掉别人的键。
+    stdin.write('w\r');
+    await tick();
+    assert.deepEqual(submitted, ['/mow']);
+  } finally {
+    reader.stop();
+  }
+});
+
 test('detectMinTTY 只认 MinTTY 特征，Windows Terminal / 普通终端不算', () => {
   assert.equal(detectMinTTY({ TERM_PROGRAM: 'mintty' }), true);
   assert.equal(detectMinTTY({ MSYSTEM: 'MINGW64', TERM: 'xterm-256color' }), true);

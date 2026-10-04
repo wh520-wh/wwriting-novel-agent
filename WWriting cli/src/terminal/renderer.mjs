@@ -59,8 +59,8 @@ const MARKDOWN_TONE = Object.freeze({
 //     时攒着不直写，否则那行会留在输入层之后擦不到的位置（残留族的根）。
 //     isActive() 为真时屏幕上有一个输入框；takeArea/giveArea 必须成对出现。
 // 返回 { printIntro, printUser, printAssistant, printReasoning, printPlan, setLivePlan,
-//        resetMarkdown, printThinkingPreview, resetThinkingPreview, printActivity, printStatus,
-//        setLiveQueue, printDecision, clearLive, close }。
+//        setLiveMode, resetMarkdown, printThinkingPreview, resetThinkingPreview, printActivity,
+//        printStatus, setLiveQueue, printDecision, clearLive, close }。
 export function createRenderer({
   stdout,
   color,
@@ -90,6 +90,9 @@ export function createRenderer({
   // 空闲收成一行 chip）。对齐 §4.2 的顶栏常驻 chip：Run 结束保留供回看，新 Run 才清。
   let livePlan = null;
   let planActive = false;
+  // 权限模式警示 chip（ADR-0020）：null = 普通模式不占行；YOLO 期间常驻一行 warn——
+  // P8 权限警告必须保留，切回普通它消失就是全部反馈（铁律 3：成功不弹 Toast）。
+  let liveMode = null;
   let liveBody = null; // 当前动态行（活动行 / 思考预览）的已上色文本；与计划面板合成实时区
   // 排队清单：与动态行、计划面板一起合成实时区，开跑/撤回时整表替换，那一行自然消失——
   // 排队输入不再往滚动历史写一行「排队」，历史里因此没有残影、同一原文不会出现两份记录。
@@ -289,6 +292,9 @@ export function createRenderer({
     if (liveBody !== null) lines.push(...liveBody.split('\n'));
     if (liveQueue.length > 0) lines.push(...liveQueue.map((item) => paint(queueLine(item.text), 'info')));
     if (livePlan !== null) lines.push(...planPanel());
+    // 模式 chip 放在合成链**末尾**：它贴着输入框，是「下一次输入将以什么权限执行」的告示；
+    // 动态行/排队/计划是「正在发生的事」，顺序语义与 ADR-0018 的分区一致。
+    if (liveMode !== null) lines.push(paint(clipLive(liveMode), 'warn'));
     const next = lines.length === 0 ? null : lines.join('\n');
     if (next === lastLiveSet) return;
     lastLiveSet = next;
@@ -318,6 +324,16 @@ export function createRenderer({
     if (next === livePlan && nextActive === planActive) return; // 幂等：没有变化就不动实时区
     livePlan = next;
     planActive = nextActive;
+    refreshLive();
+  }
+
+  // 权限模式警示 chip 进实时区（组合根调用，ADR-0020）：label=null 回普通、chip 收掉。
+  // 幂等纪律与 setLivePlan 同一条：文本没变就不动实时区。
+  function setLiveMode(label) {
+    if (closed) return;
+    const next = typeof label === 'string' && label !== '' ? label : null;
+    if (next === liveMode) return;
+    liveMode = next;
     refreshLive();
   }
 
@@ -631,6 +647,7 @@ export function createRenderer({
     printReasoning,
     printPlan,
     setLivePlan,
+    setLiveMode,
     resetMarkdown,
     printThinkingPreview,
     resetThinkingPreview,

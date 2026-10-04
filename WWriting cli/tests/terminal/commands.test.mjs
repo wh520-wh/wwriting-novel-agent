@@ -59,6 +59,7 @@ function makeController({
   const calls = { submit: [], stop: [], close: 0, decide: [], order: [], priority: [] };
   const controller = {
     activeRunId: () => null,
+    isBusy: () => false,
     snapshot: () => (snapshotOverride !== null ? snapshotOverride : {
       status: 'idle',
       active_run_id: calls.order.includes('active') ? 'run-1' : null,
@@ -831,6 +832,128 @@ test('未知控制事件不改变任何状态', async () => {
 
   assert.deepEqual(await handler.handleControl('whatever'), { action: 'ignored' });
   assert.deepEqual(calls.order, []);
+});
+
+// —— Shift+Tab：权限模式二态环 普通 ↔ YOLO（ADR-0020） ——
+
+// 记录型模式状态：真身住在 cli.mjs 组合根（set 会同步控制器权限层与实时区 chip）。
+function makePermissionMode(initial = 'normal') {
+  const state = { current: initial, sets: [] };
+  return {
+    state,
+    get: () => state.current,
+    set(value) { state.sets.push(value); state.current = value; },
+  };
+}
+
+test('Shift+Tab 空闲切入 YOLO：先出确认卡（规格文案），确认后才写入', async () => {
+  const { controller } = makeController();
+  const renderer = makeRenderer();
+  const mode = makePermissionMode();
+  const picks = [];
+  const handler = makeHandler({
+    controller,
+    renderer,
+    permissionMode: mode,
+    pick: async (options) => { picks.push(options); return { item: { id: 'confirm', label: '确认开启' }, index: 0 }; },
+  });
+
+  await handler.handleControl('mode-cycle');
+
+  assert.equal(mode.state.current, 'yolo');
+  assert.deepEqual(mode.state.sets, ['yolo']);
+  assert.equal(picks.length, 1);
+  // 确认文案是上游规格为开启 YOLO 规定的原文（统一行为规格书 §16）。
+  assert.equal(picks[0].title, 'YOLO 会自动执行写入和控制操作。确认开启？');
+  assert.deepEqual(picks[0].items, [
+    { id: 'confirm', label: '确认开启' },
+    { id: 'cancel', label: '先不开' },
+  ]);
+  // 提示行只有方向键答法，不出现数字直选（铁律 11）。
+  assert.ok(!/\d/.test(picks[0].hint), `提示里不得出现数字：${picks[0].hint}`);
+  // 确认/取消都不开成功或失败状态行：chip（与选择器的 summary 行）就是反馈。
+  assert.deepEqual(pick(renderer.calls, 'status'), []);
+});
+
+test('Shift+Tab 切入 YOLO 被取消（Esc / 先不开）：模式不变、无状态行', async () => {
+  const { controller } = makeController();
+  const renderer = makeRenderer();
+  const mode = makePermissionMode();
+  const handler = makeHandler({
+    controller,
+    renderer,
+    permissionMode: mode,
+    pick: async () => null,
+  });
+
+  await handler.handleControl('mode-cycle');
+
+  assert.equal(mode.state.current, 'normal');
+  assert.deepEqual(mode.state.sets, []);
+  assert.deepEqual(pick(renderer.calls, 'status'), []);
+});
+
+test('Shift+Tab 运行中不可切：回复「运行中」，不弹卡、不改状态', async () => {
+  const { controller } = makeController();
+  controller.isBusy = () => true;
+  const renderer = makeRenderer();
+  const mode = makePermissionMode();
+  const picks = [];
+  const handler = makeHandler({
+    controller,
+    renderer,
+    permissionMode: mode,
+    pick: async (options) => { picks.push(options); return null; },
+  });
+
+  await handler.handleControl('mode-cycle');
+
+  assert.deepEqual(pick(renderer.calls, 'status')[0], ['status', '运行中', { final: true, tone: 'warn', detail: '权限模式等这一轮结束后再切换。' }]);
+  assert.equal(picks.length, 0);
+  assert.deepEqual(mode.state.sets, []);
+});
+
+test('Shift+Tab YOLO 切回普通：即时收权，不需要确认卡', async () => {
+  const { controller } = makeController();
+  const renderer = makeRenderer();
+  const mode = makePermissionMode('yolo');
+  const picks = [];
+  const handler = makeHandler({
+    controller,
+    renderer,
+    permissionMode: mode,
+    pick: async (options) => { picks.push(options); return null; },
+  });
+
+  await handler.handleControl('mode-cycle');
+
+  assert.equal(mode.state.current, 'normal');
+  assert.deepEqual(mode.state.sets, ['normal']);
+  assert.equal(picks.length, 0, '收权这一侧没有把关必要，绝不弹卡');
+  assert.deepEqual(pick(renderer.calls, 'status'), []);
+});
+
+test('没有把关界面（pick 未注入）时不能开启 YOLO：如实说切换不可用', async () => {
+  const { controller } = makeController();
+  const renderer = makeRenderer();
+  const mode = makePermissionMode();
+  const handler = makeHandler({ controller, renderer, permissionMode: mode });
+
+  await handler.handleControl('mode-cycle');
+
+  const statuses = pick(renderer.calls, 'status');
+  assert.equal(statuses[0][1], '切换不可用');
+  assert.deepEqual(mode.state.sets, []);
+});
+
+test('权限模式状态未注入：Shift+Tab 如实说不可用，不静默', async () => {
+  const { controller } = makeController();
+  const renderer = makeRenderer();
+  const handler = makeHandler({ controller, renderer });
+
+  await handler.handleControl('mode-cycle');
+
+  assert.equal(pick(renderer.calls, 'status')[0][1], '切换不可用');
 });
 
 test('命令层不画任何框线：框线归输入区（它才知道框有几行）', async () => {

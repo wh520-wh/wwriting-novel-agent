@@ -840,6 +840,43 @@ test('没有 composer（管道）时不合成面板：面板不写进直写流',
   assert.equal(text.includes('▶ 写第三章\n任务计划'), false);
 });
 
+// —— 权限模式警示 chip（ADR-0020）：YOLO 期间常驻实时区，贴着输入框 ——
+
+test('YOLO 警示 chip：挂上、收掉都是一次 setLive，幂等不重画', () => {
+  const composer = makeFakeComposer();
+  const { renderer } = makeRenderer({ tty: true, env: { NO_COLOR: '1' }, composer });
+  renderer.setLiveMode('YOLO · 自动执行写入');
+  assert.ok(composer.live.includes('YOLO · 自动执行写入'), `chip 必须在场：${composer.live}`);
+  const afterOn = composer.calls.filter((call) => call.startsWith('setLive:')).length;
+  renderer.setLiveMode('YOLO · 自动执行写入'); // 同值再来一次：实时区不该被打扰
+  assert.equal(composer.calls.filter((call) => call.startsWith('setLive:')).length, afterOn, '幂等：没有变化不重画');
+  renderer.setLiveMode(null);
+  assert.equal(composer.live, null, '收掉后没有别的内容，实时区清空');
+  renderer.close();
+});
+
+test('chip 合成在链末尾：动态行与计划面板之下，紧贴输入框', () => {
+  const composer = makeFakeComposer();
+  const { renderer } = makeRenderer({ tty: true, env: { NO_COLOR: '1' }, composer });
+  renderer.setLiveMode('YOLO · 自动执行写入');
+  renderer.setLivePlan([{ summary: '写第三章', status: 'in_progress' }], { active: false });
+  renderer.printStatus('思考中');
+  const lines = composer.live.split('\n');
+  assert.equal(lines[lines.length - 1], 'YOLO · 自动执行写入', `chip 必须是最后一行：${composer.live}`);
+  assert.ok(lines.some((line) => line.includes('任务计划')), '计划 chip 仍在');
+  assert.ok(lines[0].includes('思考中'), '动态行仍在最上');
+  renderer.close();
+});
+
+test('没有 composer（管道）时 chip 不写进直写流：与计划面板同一纪律', () => {
+  const stdout = makeStdout({ tty: true });
+  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' } });
+  renderer.setLiveMode('YOLO · 自动执行写入');
+  renderer.close();
+  assert.equal(screenText(stdout.text()).includes('YOLO · 自动执行写入'), false,
+    '管道没有实时区可挂，多行面板擦不干净，绝不能直写');
+});
+
 // —— 排队行进实时区：开跑后不留「排队」残影 ——
 
 test('setLiveQueue（composer）：排队行贴在实时区，与动态行合成；一条都不进 scrollback', () => {

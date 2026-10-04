@@ -122,7 +122,7 @@ export async function readOneLine({
 
 // createInputReader({ stdin, stdout, onSubmit, onControl, stderr, env, prompt })
 //   onSubmit(text)     回车后的整行原文（未 trim；空行不触发）
-//   onControl(name)    'interrupt'（Ctrl+C）| 'eof'（输入结束）
+//   onControl(name)    'interrupt'（Ctrl+C）| 'eof'（输入结束）| 'mode-cycle'（Shift+Tab）
 // 返回 { start, stop, suspend, resume, composer }。
 //   start({ initialText }) 返回 { interactive, reason }；initialText 会像用户亲手敲的一样
 //   填进输入框并提交（位置参数那条路用它，屏幕上因此也是同一个框）。
@@ -325,6 +325,24 @@ export function createInputReader({
     };
   }
 
+  // Shift+Tab（\x1b[Z，Node 归一为 { name:'tab', shift:true }）：切换权限模式（ADR-0020）。
+  // 必须赶在 readline 内部消费**之前**拦下：配了 completer 时 Shift+Tab 与 Tab 一样触发
+  // 命令补全（实测），短路掉就不会。包私有方法与 attachAreaHooks 同一纪律；拿不到
+  // _ttyWrite 这个入口（非 TTY / 老版本）就退化成既有行为，不影响输入本身。
+  // 与 Enter 触发 /model 向导同一调用栈深度：控制回调里可能同步 suspend（真关 readline），
+  // 这条路今天每一条斜杠命令都在走，不是新风险。
+  function attachModeKeyHook(instance) {
+    if (typeof instance._ttyWrite !== 'function') return;
+    const ttyWrite = instance._ttyWrite.bind(instance);
+    instance._ttyWrite = (s, key) => {
+      if (key && key.name === 'tab' && key.shift === true) {
+        emitControl('mode-cycle');
+        return;
+      }
+      ttyWrite(s, key);
+    };
+  }
+
   // 给渲染器用的输入区协作钩子。非交互（管道）时 isActive() 为 false，渲染器走顺序直写。
   const composer = {
     isActive: () => rl !== null && interactive && areaDrawn,
@@ -376,6 +394,7 @@ export function createInputReader({
       completer: (line) => [commands.filter((name) => name.startsWith(line)), line],
     });
     attachAreaHooks(rl);
+    attachModeKeyHook(rl);
 
     rl.on('line', (line) => {
       // readline 已剥掉行尾；非 TTY 管道里仍可能有残留 \r。

@@ -53,6 +53,10 @@ const TONE = Object.freeze({
 export const SPINNER_FRAMES = Object.freeze(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']);
 export const SPINNER_INTERVAL_MS = 120;
 
+// 权限模式（ADR-0020）：YOLO 期间常驻输入框上方的警示 chip，唯一文案来源。
+// UI 统一大写 `YOLO`（上游规格 §4）；P8 权限警告必须保留，它就是要常驻的那条。
+export const YOLO_CHIP = 'YOLO · 自动执行写入';
+
 // 用户行标记：与输入提示符是同一个字符，视觉上「这一行是我说的」。
 // 铁律 9 只说 Agent 消息不带头像与署名，用户行有自己的标记不冲突。
 export const USER_MARK = '❯';

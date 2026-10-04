@@ -21,6 +21,8 @@ import { findRetryableTurn } from '../agent/history.mjs';
 // 确认的作答语义（选项表 / 文本翻译 / 「确认已失效」那句事实）只有一份：decisions.mjs。
 // 这里的文字作答与确认卡的方向键作答共用同一张翻译表。
 import { choiceFor, reportStaleDecision } from './decisions.mjs';
+// 确认卡取消痕迹的前缀与权限确认卡同一份（decisions.mjs 也用它）。
+import { MENU_CURSOR } from './select.mjs';
 
 // /model 的三行配置：左列按显示宽度对齐，值和启动头部面板同一种读法。
 const CONFIG_COLUMN = 10;
@@ -148,6 +150,11 @@ export function sessionRowLabel(session, { includeId = true } = {}) {
 //                 缺省 null = 本进程没有模型配置可依，`/effort` 如实说不可用。
 //   getReasoning  () => { text, durationMs }[]|null：本次进程内上一轮跑完的思考正文，
 //                 缺省 null = 没有取值口，`/reasoning` 照常给 empty 态（不抛）。
+//   permissionMode 权限模式的会话内状态 { get: () => 'normal'|'yolo', set }（ADR-0020），
+//                 缺省 null = 切换不可用，Shift+Tab 如实说不可用而不是静默。
+//   pick          createMenuPicker 的入口（让位 + 方向键选择器），进入 YOLO 的确认卡用它。
+//                 缺省 null = 没有把关界面就不能放行：只有「变弱」这一侧（进 YOLO）需要确认，
+//                 没有选择器时开启不可用（Shift+Tab 本身只在交互终端出现，这是兜底）。
 // 返回 { handle(text), handleControl(name) }。
 export function createCommandHandler({
   getController,
@@ -160,6 +167,8 @@ export function createCommandHandler({
   model = {},
   effort = null,
   getReasoning = null,
+  permissionMode = null,
+  pick = null,
   skills = null,
 } = {}) {
   if (typeof getController !== 'function') throw new Error('命令层需要 getController 才能触达同一个 run controller。');
@@ -175,6 +184,10 @@ export function createCommandHandler({
   const listModels = typeof model.listModels === 'function' ? model.listModels : null;
   const effortState = effort !== null && typeof effort.set === 'function' ? effort : null;
   const readReasoning = typeof getReasoning === 'function' ? getReasoning : null;
+  const modeState = permissionMode !== null && typeof permissionMode.get === 'function' && typeof permissionMode.set === 'function'
+    ? permissionMode
+    : null;
+  const openPicker = typeof pick === 'function' ? pick : null;
   const chooseSession = typeof pickSession === 'function' ? pickSession : null;
   const listSkills = skills !== null && typeof skills.list === 'function' ? skills.list : null;
 
@@ -668,6 +681,55 @@ export function createCommandHandler({
     }
   }
 
+  // —— Shift+Tab：权限模式二态环 普通 ↔ YOLO（ADR-0020）——
+  //
+  // 为什么进 YOLO 要确认卡：上游规格为开启 YOLO 规定了确认文案（「YOLO 会自动执行写入和
+  // 控制操作。确认开启？」），这是权限分级（铁律 4）的把关——误按一次 Shift+Tab 不该直接
+  // 解除全部写确认。切回普通是**收权**，即时生效、无需确认、不开成功状态行（铁律 3）：
+  // 实时区的警示 chip 消失就是全部反馈。
+  //
+  // 为什么运行中不可切：翻转时必然没有运行轮，「生效时机」因此没有歧义；也避开确认卡与
+  // 运行中的工具确认卡抢键。忙碌口径与 /retry 同款（controller.isBusy）。
+  const YOLO_CHOICES = Object.freeze([
+    Object.freeze({ id: 'confirm', label: '确认开启' }),
+    Object.freeze({ id: 'cancel', label: '先不开' }),
+  ]);
+
+  async function runModeCycle() {
+    if (modeState === null) {
+      reply('切换不可用', { tone: 'warn', detail: '当前会话没有可切换的权限模式。' });
+      return;
+    }
+    const controller = getController();
+    if (controller !== null && controller.isBusy()) {
+      reply('运行中', { tone: 'warn', detail: '权限模式等这一轮结束后再切换。' });
+      return;
+    }
+    if (modeState.get() === 'yolo') {
+      modeState.set('normal');
+      return;
+    }
+    // 进 YOLO 是「变弱」：没有把关界面（选择器）就不能放行。
+    if (openPicker === null) {
+      reply('切换不可用', { tone: 'warn', detail: '进入 YOLO 需要确认，这里给不出确认界面。' });
+      return;
+    }
+    try {
+      const picked = await openPicker({
+        title: 'YOLO 会自动执行写入和控制操作。确认开启？',
+        items: YOLO_CHOICES.map(({ id, label }) => ({ id, label })),
+        hint: '↑/↓ 选择 · 回车确认 · Esc 取消',
+        // Esc 也是一次真实的决定，留一行痕迹（与权限确认卡「拒绝留痕」同理）；
+        // 确认开启用默认 summary（`❯ 确认开启`），事后能看出当时选的是哪一项。
+        cancelSummary: `${MENU_CURSOR} ${YOLO_CHOICES.find(({ id }) => id === 'cancel').label}`,
+      });
+      if (picked !== null && picked.item.id === 'confirm') modeState.set('yolo');
+    } catch (error) {
+      // 选择器/终端半路抛错：收敛成一条事实，绝不变成未处理拒绝（与 /model 同款）。
+      reply('切换失败', { tone: 'error', detail: fact(error) });
+    }
+  }
+
   // 退出顺序固定：先停当前轮，再释放会话写锁（close 不 abort 正在跑的轮，D18）。
   async function shutdown() {
     const controller = getController();
@@ -761,8 +823,13 @@ export function createCommandHandler({
     }
   }
 
-  // 控制键：Ctrl+C 有活动轮先停，空闲才退（D14）；EOF 与退出共用同一条路径。
+  // 控制键：Ctrl+C 有活动轮先停，空闲才退（D14）；EOF 与退出共用同一条路径；
+  // Shift+Tab 切权限模式（ADR-0020），语义见 runModeCycle。
   async function handleControl(name) {
+    if (name === 'mode-cycle') {
+      await runModeCycle();
+      return { action: 'handled' };
+    }
     if (name !== 'interrupt' && name !== 'eof') return { action: 'ignored' };
     if (name === 'eof') {
       await shutdown();
