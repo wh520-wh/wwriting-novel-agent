@@ -457,6 +457,31 @@ test('超宽实时行带颜色码：量测剥掉 SGR 再算宽度，颜色码不
   stdin.end();
 });
 
+test('start 之前渲染器直写的动态行：start 后不得残留在框的上方（Task 7 deferred）', async () => {
+  // 渲染器带 composer 创建、但输入层还没 start 时，旧实现退回「管道式直写」，
+  // 动态行直接落在屏幕上；start 之后框画在它下面，composer 时代的擦除只覆盖
+  // composer 认识的实时区——start 前那一行永久残留（观感残留族，不影响提交内容）。
+  // 修复后渲染器在 composer 存在时绝不直写动态行，这条用例断端到端画面。
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' }, onSubmit: () => {} });
+  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' }, composer: reader.composer });
+
+  renderer.printStatus('思考中', { final: false }); // start 之前到达的动态行
+  reader.start();
+  await tick();
+  const screen = () => screenText(stdout.text(), { cols: 80, rows: 40 });
+  assert.match(screen(), /^\s*─{20,}\n❯ *\n\s*─{20,}$/, '框本身照常画出来');
+
+  renderer.printStatus('搜索文件', { final: false }); // start 之后：composer 协议
+  await tick();
+  assert.match(screen(), /^搜索文件\n\s*─{20,}\n❯ *\n\s*─{20,}$/, '当前动态行贴在框上方');
+  assert.doesNotMatch(screen(), /思考中/, 'start 前的动态行不得残留在画面上');
+
+  reader.stop();
+  stdin.end();
+});
+
 test('让位持有计数：嵌套让位只在最外层动终端（缺陷猎捕报告 4）', async () => {
   const calls = [];
   const fakeInput = {

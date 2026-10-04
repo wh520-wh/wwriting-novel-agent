@@ -99,6 +99,11 @@ export async function main(
 
   const projectRoot = parsed.cwd;
 
+  // 能不能给出可交互的对话面：引导、头部面板、渲染器装配与非交互分支共用输入层的同一个判据，
+  // 免得出现「引导以为能交互、输入层以为不能」的分歧。纯函数（只读 stdin/stdout/env），
+  // 在组合根之前算一次，往下所有用点都是同一份。
+  const interactive = isInteractiveTerminal({ stdin: io.stdin, stdout: io.stdout, env: io.env });
+
   // —— 组合根 ——
   // 输入读取器先建：渲染器要拿它暴露的 composer 钩子与 readline 的行缓冲协作。
   // onSubmit / onControl 只捕获下面那个 handler 常量；handler 在 start() 之前完成赋值，
@@ -114,7 +119,10 @@ export async function main(
     onControl: (name) => { void handler.handleControl(name); },
   });
 
-  const renderer = createRenderer({ stdout: io.stdout, env: io.env, composer: input.composer });
+  // composer 只在交互会话交给渲染器：管道 / 非交互没有输入区，动态行的「就地重绘」
+  // 直写路是那条路上唯一的可见交代；把 composer 交给一条永远不激活的会话，
+  // 动态行就只剩「攒着」一个去处，管道里什么都看不见了。
+  const renderer = createRenderer({ stdout: io.stdout, env: io.env, composer: interactive ? input.composer : null });
 
   // 普通权限确认的方向键选择器（铁律 11）。与 /model 向导、/resume 挑选同一套路：
   // 选择器要独占按键，常驻 readline 必须让位（suspend → 选择 → resume），让位由这一层负责。
@@ -377,10 +385,6 @@ export async function main(
       ['记忆', await memoryRow()],
     ];
   }
-
-  // 能不能给出可交互的对话面：引导、头部面板与非交互分支共用输入层的同一个判据，
-  // 免得出现「引导以为能交互、输入层以为不能」的分歧。
-  const interactive = isInteractiveTerminal({ stdin: io.stdin, stdout: io.stdout, env: io.env });
 
   // 模型设置向导的装配：首次设置与 `/model` 的重新配置共用同一套终端入口
   // （选择器用原始按键、文本用临时 readline），只在 reconfigure / focus 上分岔。

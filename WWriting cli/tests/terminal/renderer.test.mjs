@@ -355,6 +355,34 @@ test('没有 composer（管道 / 非交互）时保持顺序直写，行为不�
   assert.ok(stdout.text().endsWith('已完成\n'));
 });
 
+test('composer 在但输入区没激活：动态行攒着不直写（直写了 start 后就是没人认领的残留）', () => {
+  // Task 7 deferred 的行位假设：input.start() 之前渲染过非 final 动态行，直写落在屏幕上；
+  // start 之后框画在它下面，输入层的擦除永远够不着它——残留一行谁也管不了的状态。
+  // 修复 = 所有权归一：composer 存在，动态行就只走 composer 协议；未激活（start 前 /
+  // 让位期间）就攒在 liveBody 里，激活后经 setLive 上屏或被新状态替换，绝不落字节流。
+  const composer = makeFakeComposer('');
+  let active = false;
+  composer.isActive = () => active;
+  const { renderer, stdout } = makeRenderer({ env: { NO_COLOR: '1' }, composer });
+
+  renderer.printStatus('思考中', { final: false });
+  assert.equal(stdout.text(), '', '未激活时动态行不得直写进字节流');
+
+  // scrollback 照常直写：start 前没有框可让（启动面板、重演都走这条路，不受影响）。
+  renderer.printUser('写第一章');
+  assert.ok(stdout.text().includes('写第一章'), 'start 前的 scrollback 仍按顺序直写');
+
+  // 激活后动态行经 setLive 上屏；攒着的旧状态已被替换，既没直写过也不得复活。
+  active = true;
+  renderer.printStatus('搜索文件', { final: false });
+  assert.equal(composer.live, '搜索文件', '激活后动态行走 composer 协议');
+  assert.ok(!stdout.text().includes('思考中'), '未上屏的旧动态行不得出现在字节流里');
+  assert.ok(!stdout.text().includes('搜索文件'), '动态行不占 scrollback，只走 setLive');
+
+  renderer.close();
+  assert.equal(composer.live, null, '收尾后实时行清空');
+});
+
 test('活动行宽度闸门：超宽 label 的实时行被截到终端宽度以内（猎捕报告 7）', () => {
   const composer = makeFakeComposer('写第二章');
   const { renderer, stdout } = makeRenderer({ tty: true, composer, columns: 80 });
@@ -372,7 +400,10 @@ test('活动行宽度闸门：超宽 label 的实时行被截到终端宽度以�
   assert.ok(stdout.text().includes(longLabel), '终态活动行不许丢字');
 });
 
-test('composer 未激活（非交互输入）时退回顺序直写，不碰行缓冲', () => {
+test('composer 在但从未激活：动态行攒着，既不直写也不惊动 composer', () => {
+  // 管道 / 非交互会话由组合根传 composer: null（走「没有 composer」的直写路）。
+  // 只要 composer 在，动态行就只走 composer 协议——未激活就攒着。直写会让
+  // start 之后框上方多一行输入层永远擦不到的残留（Task 7 deferred 的行位假设）。
   const composer = makeFakeComposer('写第二章');
   composer.isActive = () => false;
   const { renderer, stdout } = makeRenderer({ composer });
@@ -380,9 +411,9 @@ test('composer 未激活（非交互输入）时退回顺序直写，不碰行�
   renderer.printStatus('思考中');
   renderer.close();
 
-  assert.deepEqual(composer.calls, []);
-  assert.ok(stdout.text().includes('思考中'));
-  assert.equal(stdout.stray.length, 0, 'composer 没占屏幕，直写不构成覆盖');
+  assert.deepEqual(composer.calls, [], '从未激活就没人接 setLive，一次都不该惊动 composer');
+  assert.equal(stdout.text(), '', '未激活时动态行不得直写进字节流');
+  assert.equal(stdout.stray.length, 0);
 });
 
 // —— 思考预览：内容在**当前轮**可见（实时区那块），但不进 scrollback ——

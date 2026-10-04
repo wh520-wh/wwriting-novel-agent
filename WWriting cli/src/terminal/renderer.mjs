@@ -44,6 +44,9 @@ const MARKDOWN_TONE = Object.freeze({
 
 // createRenderer({ stdout, color, env, composer })
 //   composer 可选：{ isActive?(), takeArea(), giveArea(), setLive(text) }，由 createInputReader 提供。
+//     组合根只在**交互会话**传它；管道 / 非交互传 null——动态行的直写退路只属于那条路。
+//     composer 一旦在，动态行就只走 composer 协议：输入区没激活（start 之前 / 让位期间）
+//     时攒着不直写，否则那行会留在输入层之后擦不到的位置（残留族的根）。
 //     isActive() 为真时屏幕上有一个输入框；takeArea/giveArea 必须成对出现。
 // 返回 { printIntro, printUser, printAssistant, printReasoning, printPlan, setLivePlan,
 //        resetMarkdown, printThinkingPreview, resetThinkingPreview, printActivity, printStatus,
@@ -122,14 +125,20 @@ export function createRenderer({
   let tookArea = false;
 
   function openBlock() {
-    if (usingComposer()) {
-      if (!tookArea) {
-        hook.takeArea();
-        tookArea = true;
+    if (hook !== null) {
+      // composer 在：动态内容只走 composer 协议。未激活（start 之前 / 让位期间）时
+      // 屏幕上没有输入区，攒在 liveBody 里的动态行等激活后再上屏——此刻直写的那一行
+      // 在 start/恢复之后会留在输入层擦不到的位置，成了谁也不认领的残留
+      // （Task 7 deferred 的行位假设：直写动态行与 composer 实时区交错）。
+      if (usingComposer()) {
+        if (!tookArea) {
+          hook.takeArea();
+          tookArea = true;
+        }
+        liveOpen = false; // 让位时输入区连同上方的实时行一起没了，那件事已经过去了
+        liveBody = null; // 实时区被物理擦掉：动态行不再算数，等下一次 drawLive 重新挂
+        lastLiveSet = undefined; // 输入层那侧的 live 也一并没了，去重记录跟着作废
       }
-      liveOpen = false; // 让位时输入区连同上方的实时行一起没了，那件事已经过去了
-      liveBody = null; // 实时区被物理擦掉：动态行不再算数，等下一次 drawLive 重新挂
-      lastLiveSet = undefined; // 输入层那侧的 live 也一并没了，去重记录跟着作废
       return;
     }
     if (liveOpen) {
@@ -148,8 +157,10 @@ export function createRenderer({
     if (liveBody !== null || livePlan !== null) refreshLive();
   }
 
-  // 动态行：此刻正在发生的事。有输入区时它贴在框的上方（输入层负责重画），
-  // 没有输入区（管道）时用 \r\x1b[K 就地重绘。
+  // 动态行：此刻正在发生的事。有 composer 时它贴在输入框的上方（输入层负责重画）；
+  // 只有真正没有 composer（管道 / 非 TTY，组合根传 composer: null）才用 \r\x1b[K 就地重绘。
+  // composer 在而输入区没激活（start 之前 / 让位期间）不直写——内容攒进 liveBody，
+  // 激活后经 refreshLive 上屏或被新状态替换；直写会让那行落在输入层擦不到的位置。
   // 动态行不会清掉「上一行活动行」的记忆——否则同一件工具在同一轮里反复失败时，
   // 那十几行就没有一行是相邻的，合并无从谈起。
   function drawLive(text, tone = 'info') {
@@ -158,11 +169,11 @@ export function createRenderer({
     const clipped = String(text ?? '').split('\n').map((line) => clipToWidth(line, resolveColumns(stdout.columns) - 1)).join('\n');
     const body = paint(clipped, tone);
     const kept = lastActivity;
-    if (usingComposer()) {
+    if (hook !== null) {
       liveOpen = true;
       lastActivity = kept;
       liveBody = body;
-      refreshLive();
+      refreshLive(); // 输入区没激活时它自己退回：内容先攒着
       return;
     }
     if (liveOpen) write(ERASE_LINE);
@@ -177,8 +188,8 @@ export function createRenderer({
     if (!liveOpen) return;
     liveOpen = false;
     const kept = lastActivity;
-    if (usingComposer()) {
-      liveBody = null;
+    if (hook !== null) {
+      liveBody = null; // 未激活时攒着的那份一并作废：它从未上屏，也不该迟到地出现
       refreshLive();
       lastActivity = kept;
       return;
@@ -447,7 +458,8 @@ export function createRenderer({
     const list = (Array.isArray(items) ? items : []).filter(
       (item) => item !== null && typeof item === 'object' && typeof item.text === 'string' && item.text !== '',
     );
-    if (usingComposer()) {
+    if (hook !== null) {
+      // composer 在：排队清单与动态行、计划面板一起合成实时区（未激活时攒着，同 drawLive）。
       liveQueue = list;
       refreshLive();
       return;
