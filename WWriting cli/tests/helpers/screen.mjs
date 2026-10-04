@@ -66,6 +66,18 @@ export function renderScreen(bytes, { cols = 100, rows = 40 } = {}) {
   for (let i = 0; i < source.length; i += 1) {
     const char = source[i];
     if (char === ESC) {
+      // OSC（ESC ] … BEL / ESC \）：标题、剪贴板这类「带外」序列，不落画面也不动光标。
+      // ConPTY 会在流水线里注入自己的 OSC 0 标题，不跳过就会把 `]0;C:\…\node.exe`
+      // 当成正文打出来，整幅画面右移错行。
+      if (source[i + 1] === ']') {
+        let j = i + 2;
+        while (j < source.length && source[j] !== '\u0007') {
+          if (source[j] === ESC && source[j + 1] === '\\') { j += 1; break; }
+          j += 1;
+        }
+        i = Math.min(j, source.length);
+        continue;
+      }
       const match = /^\u001b\[([0-9;?]*)([A-Za-z])/.exec(source.slice(i));
       if (match === null) continue;
       const params = match[1];

@@ -46,6 +46,13 @@ test('SGR（颜色码）只被丢弃，不影响字符位置', () => {
   assert.equal(screenText('\x1b[36m❯ \x1b[0m写第一章').trim(), '❯ 写第一章');
 });
 
+test('OSC 序列整段跳过：标题/剪贴板这类带外序列不落画面也不动光标', () => {
+  // ConPTY 会在流水线里注入自己的 OSC 0 标题；不跳过就会把 `]0;…` 当正文打出来，
+  // 整幅画面右移错行。BEL 与 ST（ESC \）两种收尾都要认。
+  assert.equal(screenText('\x1b]0;C:\\Program Files\\node.exe\x07写第一章'), '写第一章');
+  assert.equal(screenText('\x1b]52;c;aGVsbG8=\x1b\\写第一章'), '写第一章');
+});
+
 test('screenLineOf：按行号定位，找不到给 -1', () => {
   const bytes = '第一行\n第二行';
   assert.equal(screenLineOf(bytes, '第二行'), 1);
