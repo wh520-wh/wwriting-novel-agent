@@ -6,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { contentWidth, displayWidth, resolveColumns } from '../../src/terminal/metrics.mjs';
+import { contentWidth, displayWidth, fullWidthRuleLine, resolveColumns } from '../../src/terminal/metrics.mjs';
 
 test('resolveColumns：正数向下取整，拿不到就兜底', () => {
   assert.equal(resolveColumns(120), 120);
@@ -34,3 +34,12 @@ test('contentWidth：按终端宽度内缩，上限 78，再宽也不铺满整�
   assert.equal(contentWidth(undefined), 76, '拿不到列数就按 80 算');
   assert.equal(contentWidth(4), 1, '放不下时下限 1，不出负数');
 });
+
+test('fullWidthRuleLine：输入区全宽横线——顶格、宽 = 列数 − 1（末列有毒口径）', () => {
+  assert.equal(fullWidthRuleLine({ columns: 80 }), '─'.repeat(79), '80 列终端：79 条线，顶格无缩进，末列留白');
+  assert.equal(displayWidth(fullWidthRuleLine({ columns: 120, indent: 0 })), 119, '120 列终端铺到 119 列');
+  assert.equal(displayWidth(fullWidthRuleLine({ columns: 120, indent: 3 })), 119, 'indent 留给整块缩进的调用方：缩进计入整行，整行仍只占列数 − 1');
+  assert.equal(fullWidthRuleLine({ columns: undefined }), '─'.repeat(79), '列数拿不到按 80 兜底');
+  assert.equal(fullWidthRuleLine({ columns: 1 }), '─', '放不下时下限 1，不出负数');
+});
+

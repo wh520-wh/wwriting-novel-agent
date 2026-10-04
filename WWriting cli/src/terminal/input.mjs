@@ -34,7 +34,7 @@ import readline from 'node:readline';
 import {
   USER_MARK, paintText, resolveColor,
 } from './style.mjs';
-import { displayWidth, resolveColumns, ruleLine } from './metrics.mjs';
+import { displayWidth, resolveColumns, fullWidthRuleLine } from './metrics.mjs';
 
 // 提示符与用户行标记是同一个字符（renderer 的 USER_MARK），屏幕上「❯ 开头」永远是用户说的。
 // 有颜色时用它上色：提示符是这条对话面上最需要一眼认出的东西。
@@ -68,9 +68,10 @@ export function isInteractiveTerminal({ stdin, stdout, env = process.env } = {})
   return Boolean(stdin.isTTY && stdout && stdout.isTTY);
 }
 
-// 输入区框线的一条（上框线 / 下框线都用它）。
+// 输入区框线的一条（上框线 / 下框线都用它）。全宽口径：占满终端横轴（列数 − 1），
+// 与实时区截宽、输入行折行同一份宽度事实；`❯ ` 提示符顶格落在第 1–2 列。
 export function ruleTextFor({ stdout, env = process.env, color } = {}) {
-  return paintText(ruleLine({ columns: stdout?.columns }), 'rule', resolveColor({ color, env, stdout }));
+  return paintText(fullWidthRuleLine({ columns: stdout?.columns }), 'rule', resolveColor({ color, env, stdout }));
 }
 
 // 读一行：给「一次问一个问题」的流程用（首次引导问 API Key、手输模型名）。
@@ -159,7 +160,7 @@ export function createInputReader({
   let draftBackup = null;
 
   const promptText = () => prompt ?? promptFor({ stdout, env });
-  const rule = () => paintText(ruleLine({ columns: stdout.columns }), 'rule', useColor);
+  const rule = () => paintText(fullWidthRuleLine({ columns: stdout.columns }), 'rule', useColor);
 
   // 提示符的**纯文本**宽度。带色提示符里那些 `\x1b[36m` 在终端上不占列，但按字符数算会占 9 格——
   // 用它算光标列，typed 的字就会凭空右移一大截（踩过一次）。

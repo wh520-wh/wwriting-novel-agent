@@ -120,7 +120,9 @@ export function takeProseRows(text, { width } = {}) {
   return { rows, rest };
 }
 
-// 内容列：头部面板、正文阅读列与输入区框线共用同一份缩进与宽度，屏幕上所有横线才会对齐成一列。
+// 内容列：头部面板、正文阅读列共用同一份缩进与宽度，横线对齐成一列。
+// 输入区框线不在此列：它走 fullWidthRuleLine（占满整个终端横轴）——实时区截宽
+// （cols−1）与输入行折行（全宽）本来就按全终端算，框线换了全宽才与它们对齐。
 export const CONTENT_INDENT = 2;
 export const CONTENT_WIDTH_MAX = 78;
 
@@ -141,4 +143,14 @@ export function proseRowWidth(columns) {
 export function ruleLine({ columns, indent = CONTENT_INDENT } = {}) {
   const width = contentWidth(columns, { indent });
   return `${' '.repeat(Math.max(0, indent))}${'─'.repeat(width)}`;
+}
+
+// 输入区的全宽横线：缩进 0、宽 = 终端列数 − 1——「末列有毒，留 1 列防终端自动折行」
+// 的口径下能做到的最宽，观感即铺满整个终端横轴（实时区截宽 cols−1、输入行折行全宽，
+// 框线是屏上唯一不满宽的元素，换这份之后三者对齐）。头部面板 / 正文阅读列 / 计划面板
+// 仍走 ruleLine 的阅读列口径，不换。indent 参数留给「整块缩进」的调用方，默认顶格。
+export function fullWidthRuleLine({ columns, indent = 0 } = {}) {
+  const inset = Math.max(0, Math.floor(indent));
+  const width = Math.max(1, resolveColumns(columns) - inset - 1);
+  return `${' '.repeat(inset)}${'─'.repeat(width)}`;
 }

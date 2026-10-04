@@ -226,12 +226,12 @@ test('集成：Run 进行中的输出写在框上方，用户键入的内容与�
   const screen = () => screenText(stdout.text(), { cols: 80, rows: 40 });
 
   // 空框：上下各一条线，提示符夹在中间
-  assert.match(screen(), /^\s+─{20,}\n❯ *\n\s+─{20,}$/, '空框长这样：上框线 / ❯ / 下框线');
+  assert.match(screen(), /^\s*─{20,}\n❯ *\n\s*─{20,}$/, '空框长这样：上框线 / ❯ / 下框线');
 
   // 用户先键入一半，还没回车
   stdin.write('写第二章');
   await tick();
-  assert.match(screen(), /^\s+─{20,}\n❯ 写第二章\n\s+─{20,}$/, '键入的内容写在框里，框也跟着重画');
+  assert.match(screen(), /^\s*─{20,}\n❯ 写第二章\n\s*─{20,}$/, '键入的内容写在框里，框也跟着重画');
 
   const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' }, composer: reader.composer, scheduleTick: noopScheduleTick });
   renderer.printStatus('思考中');
@@ -248,7 +248,7 @@ test('集成：Run 进行中的输出写在框上方，用户键入的内容与�
     shown.lastIndexOf('❯ 写第二章') > shown.lastIndexOf('第一章开始了。'),
     '用户的行缓冲在输出之下（框始终贴着屏幕底部）',
   );
-  assert.match(shown, /\n❯ 写第二章\n\s+─{20,}$/, '框仍然收在屏幕最下方');
+  assert.match(shown, /\n❯ 写第二章\n\s*─{20,}$/, '框仍然收在屏幕最下方');
 
   // 输入框全程可用：补完再回车，提交的是完整的这一行
   stdin.write('，继续');
@@ -333,7 +333,7 @@ test('readOneLine：读一行就收手；box=true 时这一行也被上下两条
 
   assert.equal(await pending, 'sk-value');
   const screen = screenText(stdout.text(), { cols: 80, rows: 20 });
-  assert.match(screen, /─{20,}\n❯ sk-value\n\s+─{20,}$/, '引导页问 Key 的那一行也框在两条线里');
+  assert.match(screen, /─{20,}\n❯ sk-value\n\s*─{20,}$/, '引导页问 Key 的那一行也框在两条线里');
 });
 
 test('readOneLine：回车得到空串（调用方据此「跳过」），输入结束得到 null', async () => {
@@ -368,7 +368,7 @@ test('回车之后：框收成一条下框线留在原地，下一个框画在�
   await tick();
   assert.deepEqual(submitted, ['写第一章']);
   // 交出去的那一行被两条线夹住收在 scrollback 里，下面紧跟新一框（它的上框线本来就是分隔）。
-  assert.match(screen(), /^\s+─{20,}\n❯ 写第一章\n\s+─{20,}\n\s+─{20,}\n❯ *\n\s+─{20,}$/, '上一行被框住 → 新框紧跟其后');
+  assert.match(screen(), /^\s*─{20,}\n❯ 写第一章\n\s*─{20,}\n\s*─{20,}\n❯ *\n\s*─{20,}$/, '上一行被框住 → 新框紧跟其后');
 
   reader.stop();
 });
@@ -385,7 +385,7 @@ test('位置参数：像用户亲手敲的一样填进输入框并提交（屏�
   assert.deepEqual(submitted, ['写第一章'], '启动即提交（不必等用户敲）');
   assert.match(
     screenText(stdout.text(), { cols: 80, rows: 30 }),
-    /❯ 写第一章\n\s+─{20,}/,
+    /❯ 写第一章\n\s*─{20,}/,
     '屏幕上就是一行被框住的用户行，没有「另打一行」的痕迹',
   );
 
@@ -405,18 +405,18 @@ test('实时区可以有两行：框被顶到第三行，换回一行时不留�
   await tick();
   assert.match(
     screen(),
-    /^思考中 · 主角为什么不肯离开\n\s+这里需要一个转折\n\s+─{20,}\n❯ *\n\s+─{20,}$/,
+    /^思考中 · 主角为什么不肯离开\n\s+这里需要一个转折\n\s*─{20,}\n❯ *\n\s*─{20,}$/,
     '两行实时状态都贴在框上方，框整体下移',
   );
 
   // 收成一行状态：上移的格数必须跟着变，否则会留下上一份的第二行
   reader.composer.setLive('思考中');
   await tick();
-  assert.match(screen(), /^思考中\n\s+─{20,}\n❯ *\n\s+─{20,}$/, '换回一行时旧的第二行不残留');
+  assert.match(screen(), /^思考中\n\s*─{20,}\n❯ *\n\s*─{20,}$/, '换回一行时旧的第二行不残留');
 
   reader.composer.setLive(null);
   await tick();
-  assert.match(screen(), /^\s+─{20,}\n❯ *\n\s+─{20,}$/, '收走实时区之后只剩框本身');
+  assert.match(screen(), /^\s*─{20,}\n❯ *\n\s*─{20,}$/, '收走实时区之后只剩框本身');
 
   reader.stop();
 });
