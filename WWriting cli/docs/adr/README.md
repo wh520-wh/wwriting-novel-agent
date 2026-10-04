@@ -24,6 +24,7 @@
 | [0015](./0015-compact-manual-only-no-auto-compaction.md) | `/compact` 只做手动触发，CLI 不做自动压缩 |
 | [0016](./0016-markdown-incremental-block-parser-no-marked.md) | 正文 Markdown 用自写的增量块级解析，不引 marked |
 | [0017](./0017-plan-lives-in-live-area-panel-plus-scrollback.md) | 任务计划在终端 = 实时区常驻面板 / chip + 滚动区全表 |
+| [0019](./0019-prose-vertical-rhythm.md) | 正文垂直节奏 = 致密块矩阵 + 正文→UI 单空行，模型原文空行照旧透传 |
 
 > 0006–0008 是 `WWRITING.md` 项目记忆的设计决策（铁律 7）。并发写语义已随 Q12 拍板（最后写者赢，
 > 防线是确认卡显示变更）；`/init` 更新契约经 2026-09-28 对抗性审查收敛为

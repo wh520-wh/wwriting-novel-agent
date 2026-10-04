@@ -96,6 +96,9 @@ export function createRenderer({
   });
   // 上一行落进 scrollback 的活动行（用来合并连续重复的那一行）。任何别的输出都会把它清掉。
   let lastActivity = null;
+  // 上一批落进 scrollback 的是正文（ADR-0019 呼吸空行的判据，见 sealProseGap）。
+  // 判的是「屏幕上最后一行是谁」，不是「markdown 缓冲里还剩什么」——正文是边到边写的。
+  let proseOpen = false;
   // 思考预览：thinkingDone 是已经攒满的完整行（只留末尾几行），thinkingPending 是还不够一行的尾巴，
   // thinkingPreviewOn 表示「实时区当前这一份就是思考预览」——下一片 delta 到达时据此判断
   // 是接着上一段画，还是另起一段（一轮里可以有多个模型轮次，各自有一段思考）。
@@ -257,6 +260,19 @@ export function createRenderer({
     if (lines.length === 0) return;
     openBlock();
     write(`${lines.join('\n')}\n`);
+    proseOpen = true;
+    closeBlock();
+  }
+
+  // 正文与下一条 UI 行之间的呼吸空行（ADR-0019）：上一批落进 scrollback 的是正文时，
+  // 先补一个空行再写工具行/状态行/决策卡/用户行。正文行是边到边写的，等 flush 时
+  // 缓冲多半已空——所以判据是「屏幕上最后一行是谁」，不是「缓冲里还剩什么」。
+  // UI 行彼此之间不补；clearLive / close 也不补（会话收尾不留尾空行）。
+  function sealProseGap() {
+    if (!proseOpen) return;
+    proseOpen = false;
+    openBlock();
+    write('\n');
     closeBlock();
   }
 
@@ -305,6 +321,7 @@ export function createRenderer({
     }
     if (lines.length === 0) return;
     flushProse({ force: true });
+    sealProseGap();
     openBlock();
     write(`${pad}${lines.join(`\n${pad}`)}\n`);
     closeBlock();
@@ -313,6 +330,7 @@ export function createRenderer({
   // 用户记录使用中性底色和高对比正文；NO_COLOR 不输出颜色或补白。
   function printUser(text) {
     flushProse({ force: true });
+    sealProseGap();
     // 内容列宽 = 正文行宽 + 缩进：用户行与正文行因此在屏幕上同宽，所有块对齐成一列。
     const width = proseRowWidth(stdout.columns) + PROSE_INDENT;
     const rows = userRows(text, { width });
@@ -333,6 +351,7 @@ export function createRenderer({
     if (lines.length === 0) return;
     openBlock();
     write(`${lines.join('\n')}\n`);
+    proseOpen = true;
     closeBlock();
   }
 
@@ -386,6 +405,7 @@ export function createRenderer({
   function printReasoning(text) {
     if (closed || typeof text !== 'string' || text === '') return;
     flushProse({ force: true });
+    sealProseGap();
     const width = proseRowWidth(stdout.columns);
     const { rows, rest } = takeProseRows(text, { width });
     const all = rest === '' ? rows : [...rows, rest];
@@ -402,6 +422,7 @@ export function createRenderer({
   function printPlan(items) {
     if (closed || !Array.isArray(items) || items.length === 0) return;
     flushProse({ force: true });
+    sealProseGap();
     openBlock();
     write(`${planTableLines(items, proseRowWidth(stdout.columns), paint).join('\n')}\n`);
     closeBlock();
@@ -417,6 +438,7 @@ export function createRenderer({
     const note = typeof detail === 'string' && detail !== '' ? ` · ${detail}` : '';
     const line = `${mark} ${label}${note}`;
     flushProse({ force: true });
+    sealProseGap();
     resetMarkdown(); // 工具行 = 消息边界：上一条消息里没闭合的围栏到此为止
     if (state === 'running') {
       drawLive(line, tone);
@@ -438,6 +460,7 @@ export function createRenderer({
     const fact = typeof detail === 'string' && detail !== '' ? `${text}：${detail}` : text;
     // note 是行尾的补充量（如本轮 tokens），与「：一条事实」分开，免得事实被数字挤到看不清。
     flushProse({ force: true });
+    sealProseGap();
     if (!final) {
       drawLive(text, tone);
       return;
@@ -468,6 +491,7 @@ export function createRenderer({
       if (typeof item.input_id === 'string' && queueWritten.has(item.input_id)) continue;
       if (typeof item.input_id === 'string') queueWritten.add(item.input_id);
       flushProse({ force: true });
+      sealProseGap();
       openBlock();
       write(`${paint(queueLine(item.text), 'info')}\n`);
       closeBlock();
@@ -485,6 +509,7 @@ export function createRenderer({
   //                   「回复 1/2/3」那种答法会让人把自己的答案当成序号输进去。
   function printDecision(decision = {}, { picker = false } = {}) {
     flushProse({ force: true });
+    sealProseGap();
     openBlock();
     const { level = 'write', tool = null, target = null, confirmation_text: confirmation = null } = decision;
     const what = activityLabel(tool, target);

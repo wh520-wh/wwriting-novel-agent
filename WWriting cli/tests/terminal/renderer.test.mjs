@@ -150,6 +150,50 @@ test('正文落盘只看「有没有整行」：不足一行不写，换行一�
   assert.ok(stdout.text().endsWith('a'.repeat(64) + '换行\n'));
 });
 
+// —— 正文 → UI 边界的呼吸空行（ADR-0019）——
+
+test('正文之后接工具行/状态行：补一个空行再交棒；UI 行接 UI 行不补', () => {
+  const { renderer, stdout } = makeRenderer();
+
+  renderer.printAssistant('先看一眼。\n');
+  renderer.printActivity({ state: 'done', label: '读取文件 大纲.md' });
+  renderer.printActivity({ state: 'done', label: '读取文件 设定.md' });
+  renderer.printStatus('已完成', { final: true, tone: 'success' });
+  renderer.close();
+
+  const lines = stdout.text().split('\n');
+  const index = lines.indexOf('▌ 先看一眼。');
+  assert.equal(lines[index + 1], '', '正文 → 工具行之间有一个空行');
+  assert.equal(lines[index + 2], '✓ 读取文件 大纲.md', '空行之后才是工具行');
+  assert.equal(lines.indexOf('✓ 读取文件 设定.md') - lines.indexOf('✓ 读取文件 大纲.md'), 1, '工具行 → 工具行紧排，不补空行');
+  const status = lines.indexOf('已完成');
+  assert.equal(lines[status - 1], '✓ 读取文件 设定.md', '终态行紧贴上一条 UI 行，中间不凭空多空行');
+});
+
+test('正文之后接用户行/决策卡：同样补一个空行；正文为空时什么都不补', () => {
+  const { renderer, stdout } = makeRenderer();
+
+  renderer.printUser('写第一章');
+  renderer.printAssistant('好的。\n');
+  renderer.printDecision({ decision_id: 'd1', level: 'write', tool: 'write_file', target: '第一章.md' });
+  renderer.printUser('继续');
+  renderer.close();
+
+  const lines = stdout.text().split('\n');
+  const prose = lines.indexOf('▌ 好的。');
+  assert.equal(lines[prose + 1], '', '正文 → 决策卡之间有一个空行');
+  assert.ok(lines[prose + 2].includes('需要确认'), '空行之后才是确认卡');
+  const user = lines.indexOf('❯ 继续');
+  assert.ok(lines[user - 1].includes('需要确认') || lines[user - 1].includes('拒绝'), '决策卡 → 用户行之间不补空行');
+});
+
+test('会话收尾（close）不补尾空行', () => {
+  const { renderer, stdout } = makeRenderer();
+  renderer.printAssistant('最后一句。\n');
+  renderer.close();
+  assert.ok(stdout.text().endsWith('▌ 最后一句。\n'), '正文落盘即收尾，尾部没有多余空行');
+});
+
 test('普通确认卡：文字模式只列词不列数字，选择器模式只留「需要确认」一行', () => {
   // 文字模式（非 TTY / 管道 / 测试替身）：用户只能在同一个输入框里用文字答，
   // 卡片必须给一行提示——但**只能列词不能列数字**（铁律 11：数字直选是不宣传的隐藏别名）。

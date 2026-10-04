@@ -71,12 +71,12 @@ test('plainInline：与 styleInline 同一解析器，只留文字（宽度口�
 
 // —— 块级 ——
 
-test('标题：h1 用 h1 色调、h2+ 用粗体；井号去掉，不带段首标记', () => {
+test('标题：h1 用 h1 色调、h2+ 用粗体；井号去掉，不带段首标记；块前补呼吸空行', () => {
   const w = writer({ paint: tonePaint });
-  assert.deepEqual(w.push('# 第一章\n'), [`  ${SGR.h1}第一章${R}`]);
-  assert.deepEqual(w.push('## 第二节\n'), [`  ${SGR.bold}第二节${R}`]);
-  assert.deepEqual(w.push('###### 小标题\n'), [`  ${SGR.bold}小标题${R}`]);
-  assert.deepEqual(w.push('#没有空格不是标题\n'), ['▌ #没有空格不是标题']);
+  assert.deepEqual(w.push('# 第一章\n'), [`  ${SGR.h1}第一章${R}`], '流开头不带前导空行');
+  assert.deepEqual(w.push('## 第二节\n'), ['', `  ${SGR.bold}第二节${R}`], '致密块与上一块之间补一个空行');
+  assert.deepEqual(w.push('###### 小标题\n'), ['', `  ${SGR.bold}小标题${R}`]);
+  assert.deepEqual(w.push('#没有空格不是标题\n'), ['▌ #没有空格不是标题'], '标题向下绑定：标题后的段落不再补空行');
 });
 
 test('段落：首行带段首标记、续行缩进；空行分两段、各自带标记', () => {
@@ -100,12 +100,13 @@ test('列表：无序、有序、嵌套、任务项', () => {
   ]);
 });
 
-test('引用：竖线前缀；分隔线：整行横线（含 * * * 写法）', () => {
+test('引用：竖线前缀；分隔线：整行横线（含 * * * 写法）；与前块之间补空行', () => {
   const w = writer({ paint: tonePaint, columns: 40 });
   assert.deepEqual(w.push('> 一句话引用\n'), [`  ${SGR.code}│ ${R}一句话引用`]);
   const rule = w.push('---\n');
-  assert.equal(rule.length, 1);
-  assert.match(rule[0], /^  \x1b\[38;5;242m─+\x1b\[0m$/);
+  assert.equal(rule.length, 2, '引用是致密块：分隔线前来补一个空行');
+  assert.equal(rule[0], '');
+  assert.match(rule[1], /^  \x1b\[38;5;242m─+\x1b\[0m$/);
 
   // 回归：`* * *` 是分隔线，不是列表项——绝不能被列表分支吃掉内容。
   const spaced = writer({ paint: tonePaint, columns: 40 });
@@ -114,11 +115,19 @@ test('引用：竖线前缀；分隔线：整行横线（含 * * * 写法）', (
   assert.match(lines[0], /─/, `带空格的分隔线：${JSON.stringify(lines)}`);
 });
 
+test('引用续行不补空行：> a 与 > b 是同一块的延续', () => {
+  const w = writer({ paint: tonePaint, columns: 40 });
+  assert.deepEqual(w.push('> 第一行\n> 第二行\n'), [
+    `  ${SGR.code}│ ${R}第一行`,
+    `  ${SGR.code}│ ${R}第二行`,
+  ], '引用行之间不插空行');
+});
+
 test('代码块：围栏行不显示，块内缩进更深并压暗，块外回到正文', () => {
   const w = writer({ paint: tonePaint });
   assert.deepEqual(w.push('```js\nconst a = 1;\n```\n'), [`    ${SGR.code}const a = 1;${R}`]);
   const after = w.push('正文\n');
-  assert.deepEqual(after, ['▌ 正文'], '代码块结束之后是新的一段，带段首标记');
+  assert.deepEqual(after, ['', '▌ 正文'], '围栏是致密块：块后补一个空行，新段落带段首标记');
 });
 
 // 回归（跨轮状态泄漏）：未闭合围栏不允许污染此后的内容——flush 之后由调用方在
@@ -226,6 +235,49 @@ test('表格：非分隔行的下一行让候选行回到正文（不是表格�
   const w = writer();
   assert.deepEqual(w.push('| 这行不是表格 |\n'), [], '整行到达也要等下一行判分隔行');
   assert.deepEqual(w.push('接着一行\n'), ['▌ | 这行不是表格 |', '  接着一行']);
+});
+
+// —— 块间垂直节奏（ADR-0019）——
+
+test('节奏：原文空行与致密块边界不叠加成双空行', () => {
+  const w = writer();
+  assert.deepEqual(w.push('第一段\n\n# 标题\n\n第二段\n'), [
+    '▌ 第一段',
+    '',
+    '  标题',
+    '',
+    '▌ 第二段',
+  ], '模型自己排的版一个空行都不多加：透传的空行让边界自动补空行哑火');
+});
+
+test('节奏：无空行时标题/表格/围栏前来各自补一个空行，段落与列表之间不补', () => {
+  const w = writer();
+  assert.deepEqual(w.push('先说结论\n## 依据\n- 一条\n- 两条\n正文收尾\n'), [
+    '▌ 先说结论',
+    '',           // 段落 → 标题：标题上方要空行
+    '  依据',
+    '  - 一条',   // 标题 → 列表：标题向下绑定，不留缝
+    '  - 两条',   // 列表内部：不补
+    '▌ 正文收尾', // 列表 → 段落：都是 flow，不补
+  ]);
+});
+
+test('节奏：段落紧跟着的表格在整表落地时补前置空行', () => {
+  const w = writer();
+  const lines = w.push('对照如下\n| 甲 | 乙 |\n|---|---|\n| 1 | 2 |\n\n');
+  assert.equal(lines[0], '▌ 对照如下');
+  assert.equal(lines[1], '', '表格是延迟渲染的：前置空行跟着表格一起落地');
+  assert.match(lines[2], /┌/);
+});
+
+test('节奏：flush 与 reset 把节奏归零，新一段正文不带前导空行', () => {
+  const w = writer();
+  w.push('# 标题\n');
+  w.flush();
+  assert.deepEqual(w.push('新的一段\n'), ['▌ 新的一段'], 'flush 之后不补前导空行（UI 边界的空行是 flushProse 的职责）');
+  w.push('# 又一个标题\n');
+  w.reset();
+  assert.deepEqual(w.push('另一轮的开头\n'), ['▌ 另一轮的开头'], 'reset 之后同理');
 });
 
 function joined(lines) {

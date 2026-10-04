@@ -15,6 +15,11 @@
 //   行内：`代码`、**粗**、*斜*、~~删除线~~、[文本](链接)、反斜杠转义（含 `\|`）。
 //   不做（按原文输出，不静默吞）：图片（`![alt](url)` → `alt (url)`）、原始 HTML、脚注、
 //   引用内的子块、嵌套强调、setext 标题、`~` 单击（GFM 本就不算删除线）。
+//
+// 块间垂直节奏（ADR-0019）：模型原文的空行照旧 1:1 透传；此外致密块（围栏代码、
+// 表格、引用、分隔线）与相邻块之间、标题的**上方**自动补一个空行——决策键是 prevBlock，
+// 收口在 needAir，绝不与原文空行叠加成双空行。段落与列表是 flow，互相之间不加自动空行；
+// 标题向下绑定（标题与它引出的内容之间不留缝）。
 import {
   CONTENT_INDENT, clipToWidth, displayWidth, proseRowWidth, takeProseRows, wrapCut,
 } from './metrics.mjs';
@@ -37,6 +42,10 @@ const MAX_TABLE_ROW_LINES = 4;
 const VERTICAL_RULE_WIDTH = 40;
 const MAX_LIST_DEPTH = 3;
 const ESCAPABLE = /[\\`*_~[\]()#+\-.!>|｜]/;
+
+// 「撞上它要补呼吸空行」的块种类（ADR-0019）：致密块 + 引用。
+// 上一块是段落/列表时，只有这些种类前来才在边界上补空行；段落与列表之间不补。
+const AIR_ABOVE = new Set(['heading', 'code', 'table', 'quote', 'hr']);
 
 const blank = (text) => String(text).trim() === '';
 // 含行内标记/链接/转义的半行先不软折行（见 emitParagraph 的说明）。
@@ -526,6 +535,15 @@ export function createMarkdownWriter({
   let leadDone = false; // 本段是否已落过段首标记
   let candidate = null; // 表格候选行（等下一行是不是分隔行）
   let tableRows = []; // 已确认的表格原始行（含表头与分隔行）
+  let prevBlock = 'none'; // none | blank | flow | quote | dense —— 块间垂直节奏的决策键
+
+  // 块边界要不要补一个呼吸空行（ADR-0019）。prev 是致密块或引用时，除引用续行外都补；
+  // prev 是段落/列表时只有撞上致密块才补；none（流开头）与 blank（原文空行刚透传过）永不补。
+  function needAir(current) {
+    if (prevBlock === 'none' || prevBlock === 'blank') return false;
+    if (prevBlock === 'flow') return AIR_ABOVE.has(current);
+    return current !== 'quote';
+  }
 
   // 一段文本按行宽折行、逐行加上前缀：首行 prefix、续行 contPrefix；先上色后折行。
   function pushStyled(out, raw, { prefix, contPrefix, limit }) {
@@ -555,20 +573,28 @@ export function createMarkdownWriter({
         return;
       }
       const { rows, rest } = takeProseRows(text, { width: limit });
-      rows.forEach((row, index) => {
-        out.push(`${index === 0 ? prefix : pad}${row}`);
-      });
-      if (rows.length > 0) leadDone = true;
+      if (rows.length > 0) {
+        if (needAir('para')) out.push('');
+        rows.forEach((row, index) => {
+          out.push(`${index === 0 ? prefix : pad}${row}`);
+        });
+        leadDone = true;
+        prevBlock = 'flow';
+      }
       paraTail = rest;
       return;
     }
     // 完整行：先按换行切**逻辑行**，再逐逻辑行「先上色、后折行」——强调跨折行不漏标记。
     const logical = String(text).split('\n');
+    if (needAir('para') && logical.length > 0) out.push('');
     logical.forEach((line, lineIndex) => {
       const head = lineIndex === 0 ? prefix : pad;
       for (const row of wrapStyled(styleInline(line, paint), limit)) out.push(`${head}${row.text}`);
     });
-    if (logical.length > 0) leadDone = true;
+    if (logical.length > 0) {
+      leadDone = true;
+      prevBlock = 'flow';
+    }
     paraTail = '';
   }
 
@@ -579,12 +605,16 @@ export function createMarkdownWriter({
   }
 
   function emitHeading(out, depth, text) {
+    if (needAir('heading')) out.push('');
     const tone = depth === 1 ? 'h1' : 'bold';
     const limit = Math.max(1, width());
     for (const row of wrapStyled(plainInline(text), limit)) out.push(`${pad}${paint(row.text, tone)}`);
+    // 标题只在**上方**要空行：它归属下方的内容，标题与列表/代码之间不留缝（向下绑定）。
+    prevBlock = 'flow';
   }
 
   function emitQuote(out, line) {
+    if (needAir('quote')) out.push('');
     const depth = Math.min((line.match(/^\s*(?:>\s*)+/) ?? [''])[0].split('>').length - 1, MAX_LIST_DEPTH);
     const text = line.replace(/^\s*(?:>\s*)+/, '');
     const barCount = Math.max(1, depth);
@@ -592,9 +622,11 @@ export function createMarkdownWriter({
     const bar = paint(barPlain, 'dim');
     const limit = Math.max(1, width() - displayWidth(barPlain));
     for (const row of wrapStyled(styleInline(text, paint), limit)) out.push(`${pad}${bar}${row.text}`);
+    prevBlock = 'quote';
   }
 
   function emitListItem(out, indentText, marker, content) {
+    if (needAir('list')) out.push('');
     const sourceIndent = indentText.replace(/\t/g, '  ');
     const depth = Math.min(Math.floor(sourceIndent.length / 2), MAX_LIST_DEPTH);
     const headPad = `${pad}${spaces(depth * 2)}`;
@@ -619,12 +651,15 @@ export function createMarkdownWriter({
       const body = checked ? paint(plainInline(row.text), 'done') : row.text;
       out.push(`${index === 0 ? head : cont}${body}`);
     });
+    prevBlock = 'flow';
   }
 
   function emitTable(out) {
+    if (needAir('table')) out.push('');
     const rows = tableRows;
     tableRows = [];
     mode = 'idle';
+    prevBlock = 'dense';
     const header = splitRow(rows[0] ?? '');
     const aligns = alignmentsOf(splitRow(rows[1] ?? ''));
     while (aligns.length < header.length) aligns.push('left');
@@ -672,17 +707,22 @@ export function createMarkdownWriter({
       }
       if (FENCE.test(line)) {
         closeParagraph();
+        if (needAir('code')) out.push('');
         mode = 'code';
+        prevBlock = 'dense';
         return;
       }
       if (blank(line)) {
         closeParagraph();
         out.push('');
+        prevBlock = 'blank';
         return;
       }
       if (HR.test(line)) {
         closeParagraph();
+        if (needAir('hr')) out.push('');
         out.push(`${pad}${paint('─'.repeat(Math.max(1, width())), 'rule')}`);
+        prevBlock = 'dense';
         return;
       }
       const head = HEADING.exec(line);
@@ -765,8 +805,10 @@ export function createMarkdownWriter({
       else emitParagraph(out, tail, { complete: true });
     }
     // flush 的使用场景就是「马上要写别的东西」：段落到此为止，下一片正文是新的一段
-    // （工具行之后模型再开口要重新带段首标记）。
+    // （工具行之后模型再开口要重新带段首标记）。节奏状态一并归零——下一段正文永远
+    // 不带前导空行（与 UI 行之间的空行是 flushProse 的 gap 职责，不归这里管）。
     closeParagraph();
+    prevBlock = 'none';
     return out;
   }
 
@@ -779,6 +821,7 @@ export function createMarkdownWriter({
     tableRows = [];
     leadDone = false;
     mode = 'idle';
+    prevBlock = 'none';
   }
 
   return {
