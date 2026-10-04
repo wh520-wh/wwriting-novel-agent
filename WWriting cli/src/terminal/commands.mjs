@@ -717,7 +717,7 @@ export function createCommandHandler({
     try {
       const picked = await openPicker({
         title: 'YOLO 会自动执行写入和控制操作。确认开启？',
-        items: YOLO_CHOICES.map(({ id, label }) => ({ id, label })),
+        items: YOLO_CHOICES, // 已是 [{ id, label }] 且冻结；选择器对 items 只读，无需克隆
         hint: '↑/↓ 选择 · 回车确认 · Esc 取消',
         // Esc 也是一次真实的决定，留一行痕迹（与权限确认卡「拒绝留痕」同理）；
         // 确认开启用默认 summary（`❯ 确认开启`），事后能看出当时选的是哪一项。

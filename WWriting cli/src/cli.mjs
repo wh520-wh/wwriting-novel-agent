@@ -329,7 +329,8 @@ export async function main(
     set(value) {
       permissionYolo = value === 'yolo';
       // 控制器尚未打开时只记状态：输入层在控制器开好之后才启动，Shift+Tab 进不到那条路。
-      if (controller !== null) controller.permissions?.setYolo?.(permissionYolo);
+      // permissions 由 createRunController 保证非空且带 setYolo（run-controller.mjs 的返回契约）。
+      if (controller !== null) controller.permissions.setYolo(permissionYolo);
       renderer.setLiveMode(permissionYolo ? YOLO_CHIP : null);
     },
   };
