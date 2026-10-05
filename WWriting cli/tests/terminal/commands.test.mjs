@@ -1645,3 +1645,18 @@ test('/retry 进帮助菜单', () => {
     assert.match(helpText, /\/retry\s+重跑最近一次失败或中断的轮次/);
   });
 });
+
+test('/init 草稿按 Ctrl+S 也不走立即——命令草稿与回车完全同路（ADR-0021 决定 3）', async () => {
+  const calls = [];
+  const handler = createCommandHandler({
+    getController: () => ({
+      submit: async ({ text }) => { calls.push(['submit', text]); return { status: 'completed' }; },
+      submitNow: async ({ text }) => { calls.push(['submitNow', text]); return { status: 'completed' }; },
+    }),
+    renderer: makeRenderer(),
+  });
+  await handler.handle('/init 附带要求', { immediate: true });
+  await handler.handle('普通正文', { immediate: true });
+  assert.deepEqual(calls, [['submit', '/init 附带要求'], ['submitNow', '普通正文']],
+    '/init 剥掉 immediate；普通正文保留 immediate');
+});

@@ -1198,3 +1198,69 @@ test('meta + 单字符（同批合并残骸）剥掉 meta 按普通字符重注�
     reader.stop();
   }
 });
+
+// —— 复查确立的收口（2026-10-05 第二轮）——
+
+test('meta + 语义键合并残骸也剥掉：ESC+退格 不会变成「删一词」之外的意外，字符操作照常', async () => {
+  const stdout = makeSink({ tty: true });
+  const stdin = makeFakeTTY();
+  const submitted = [];
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' }, onSubmit: (text) => submitted.push(text) });
+  reader.start();
+  try {
+    stdin.write('初稿');
+    await tick();
+    stdin.write('\x1b\x7f'); // Esc 与退格同批到达：合并残骸 meta+backspace
+    await tick();
+    stdin.write('\r');
+    await tick();
+    assert.deepEqual(submitted, ['初'], '退格按普通退格处理：删掉一个字');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('菜单封顶扣除实时区行数：忙碌大实时区下菜单不把整块顶出屏幕', async () => {
+  const stdout = makeSink({ tty: true });
+  stdout.rows = 20;
+  const { stdin, reader } = makeMenuReader(stdout);
+  reader.start();
+  try {
+    reader.composer.setRuleTag({ text: 'Normal', tone: 'info' });
+    reader.composer.setLive(Array.from({ length: 9 }, (_, i) => `活动 ${i + 1}`).join('\n'));
+    await tick();
+    stdin.write('/');
+    await tick();
+    const lines = screenText(stdout.text(), { cols: 80, rows: 20 }).split('\n');
+    const hintIndex = lines.findIndex((line) => line.includes('↑/↓ 选择'));
+    const ruleIndex = lines.findIndex((line) => line.includes('Normal'));
+    assert.ok(hintIndex !== -1 && ruleIndex !== -1 && hintIndex < ruleIndex, `菜单仍在框线上方：${JSON.stringify(lines)}`);
+    // 封顶 = max(3, 20−6−9) = 5 行 → 条目 4 + 提示 1：实时区 9 行时菜单恰好 5 行，
+    // 整块（实时 9 + 菜单 5 + 框 3 = 17）仍在 20 行屏内；旧公式会给出 17 行菜单。
+    const menuRows = hintIndex - lines.findIndex((line) => line.startsWith('❯ /model')) + 1;
+    assert.equal(menuRows, 5, `菜单（含提示行）封顶 5 行：实际 ${menuRows}`);
+  } finally {
+    reader.stop();
+  }
+});
+
+test('让位前按过 Esc：恢复后菜单仍按草稿重建（收起标记随让位清除）', async () => {
+  const stdout = makeSink({ tty: true });
+  const stdin = makeFakeTTY();
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' }, onSubmit: () => {}, menuCommands: MENU_ITEMS });
+  reader.start();
+  try {
+    stdin.write('/re');
+    await tick();
+    stdin.write('\x1b'); // 让位前先 Esc 收起
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    reader.suspend();
+    reader.resume();
+    await tick();
+    const screen = screenText(stdout.text());
+    assert.ok(screen.includes('❯ /re'), `草稿已写回：${screen}`);
+    assert.ok(screen.includes('↑/↓ 选择'), '收起标记已随让位清除，菜单按草稿重建');
+  } finally {
+    reader.stop();
+  }
+});

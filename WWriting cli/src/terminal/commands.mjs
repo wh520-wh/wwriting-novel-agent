@@ -768,8 +768,9 @@ export function createCommandHandler({
     const parsed = parseSlashCommand(trimmed);
     if (parsed === null || parsed.name === 'init') {
       // 提交的是 trimmed（整行原文），不是 parsed?.name：附加要求必须一字不落跟着走。
-      // immediate（Ctrl+S）只对普通正文有意义——/init 与回车完全同路（工单 03）。
-      submit(trimmed, { immediate });
+      // immediate（Ctrl+S）只对**普通正文**有意义——/init 是登记在命令表里的命令，
+      // 命令草稿与回车完全同路、绝不打断/提升（ADR-0021 决定 3，复查确立）。
+      submit(trimmed, { immediate: parsed === null && immediate });
       return { action: 'submit' };
     }
 

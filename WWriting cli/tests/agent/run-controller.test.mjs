@@ -1650,3 +1650,39 @@ test('立即提交：空闲空队列与回车完全同路；空白草稿被拒�
     await controller.close();
   }
 });
+
+test('立即提交：连按多条立即——后按的先跑，每次打断在跑的那条', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-submitnow-race-');
+  const projectRoot = path.join(root, 'novel');
+  const loop = makeLoopFactory({ script: ['hold', 'hold', 'hold'] });
+  const { controller } = await makeController({ root, projectRoot, agentLoopFactory: loop.factory });
+
+  try {
+    const first = controller.submit({ text: '第一条' });
+    await waitFor(() => controller.snapshot().active_run_id !== null, { label: '第一轮开始' });
+
+    await controller.submitNow({ text: '立即甲' });
+    await waitFor(() => loop.runs.length === 2, { label: '立即甲开跑' });
+    await controller.submitNow({ text: '立即乙' });
+    await waitFor(() => loop.runs.length === 3, { label: '立即乙开跑' });
+
+    loop.release(2); // 放行最后一轮，drain 收敛
+    await first;
+
+    assert.deepEqual(loop.runs.map((run) => run.text), ['第一条', '立即甲', '立即乙'],
+      '后按的先跑：每次立即都打断在跑的那条');
+    assert.equal(loop.stats().maxConcurrent, 1, '始终只有一个 Agent 在跑');
+    const events = await loop.events();
+    assert.deepEqual(
+      events.filter((event) => event.type === 'input_promoted').map((event) => event.data.input_id),
+      [loop.runs[1].inputId, loop.runs[2].inputId],
+      '两条提升事件按提交次序落盘',
+    );
+    assert.equal(
+      events.filter((event) => event.type === 'run_interrupted').length, 2,
+      '前两轮都被打断收敛',
+    );
+  } finally {
+    await controller.close();
+  }
+});

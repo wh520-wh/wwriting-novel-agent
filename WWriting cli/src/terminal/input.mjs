@@ -364,7 +364,14 @@ export function createInputReader({
   function attachKeysHook(instance) {
     if (typeof instance._ttyWrite !== 'function') return;
     const ttyWrite = instance._ttyWrite.bind(instance);
-    instance._ttyWrite = (s, key) => {
+    // 转义歧义窗口的合并残骸判据：Esc 与下一键同批到达时，Node 把两键归一成
+    // meta+<键>——单字符（字母/数字）与「语义键」都在内。本应用不用 Alt 组合键，
+    // 宁可放弃它们也不能丢字或丢意图（escapeCodeTimeout 收口之外的双保险）。
+    const META_DEBRIS_NAMES = new Set(['space', 'backspace', 'delete', 'tab', 'return', 'enter']);
+    const isMetaDebris = (key) => key && key.meta === true && key.ctrl !== true
+      && typeof key.name === 'string'
+      && (key.name.length === 1 || META_DEBRIS_NAMES.has(key.name));
+    const handleKey = (s, key) => {
       // —— 先于 readline 消费的拦截（Shift+Tab / Ctrl+S / 菜单态按键 / Tab）——
       if (key && key.name === 'tab' && key.shift === true) {
         emitControl('mode-cycle');
@@ -404,21 +411,23 @@ export function createInputReader({
         }
         return;
       }
-      if (key && key.meta === true && key.ctrl !== true && typeof key.name === 'string'
-        && key.name.length === 1) {
-        // meta + 单字符 = 转义歧义窗口的合并残骸（Esc 与下一键同批到达，字符会被
-        // readline 静默丢掉）。剥掉 meta 按普通字符重注：本应用不用 Alt 组合键，
-        // 宁可放弃它们也不能丢字（escapeCodeTimeout 收口之外的双保险）。
-        ttyWrite(key.name, { name: key.name, meta: false, shift: key.shift === true });
-        refreshMenu();
-        return;
-      }
       if (key && (key.name === 'return' || key.name === 'enter')) {
         // 回车接受之前抹菜单：此刻行模型与屏幕几何都还有效（eraseMenuInPlace 的前提）。
         eraseMenuInPlace();
       }
       ttyWrite(s, key);
       refreshMenu();
+    };
+    instance._ttyWrite = (s, key) => {
+      // 合并残骸剥掉 meta 后**重走一遍拦截层**（tab→补全纪律、return→提交簿记都由
+      // 这里承接）。单字符的 s 必须换成裸字符——原始 s 带着 \x1b 前缀，直插会污染行模型。
+      if (isMetaDebris(key)) {
+        const plainS = key.name === 'space' ? ' '
+          : (key.name.length === 1 ? key.name : s);
+        handleKey(plainS, { ...key, meta: false });
+        return;
+      }
+      handleKey(s, key);
     };
   }
 
@@ -469,7 +478,10 @@ export function createInputReader({
   function renderMenu(state) {
     const width = Math.max(1, resolveColumns(stdout.columns) - 1);
     const totalRows = Number.isFinite(stdout.rows) && stdout.rows > 0 ? stdout.rows : 24;
-    const maxRows = Math.max(3, totalRows - 6); // 输入框、提示行与屏上余量之外才给菜单
+    // 实时区（动态行/排队/计划面板）与输入框都要留在同一屏里：菜单封顶扣掉实时区
+    // 已占的物理行——不然忙碌大实时区时整块（实时+菜单+框）高过屏高，每敲一键都有
+    // 块顶行被推进 scrollback（复查确立）。兜底 3 行保证菜单在矮终端仍可用。
+    const maxRows = Math.max(3, totalRows - 6 - liveRows(liveText));
     const room = Math.max(1, maxRows - 1); // 提示行固定占一行
     const { matches, index } = state;
     let start = 0;
@@ -664,10 +676,13 @@ export function createInputReader({
           : line.length,
       }
       : null;
-    // 菜单是纯输入 UI：让位期间它随输入区消失，状态一并清掉——resume 后按恢复的
-    // 草稿重建（start() 里 refreshMenu），绝不带着让位前的旧帧回来。
+    // 菜单是纯输入 UI：让位期间它随输入区消失，状态一并清掉（含 Esc 的收起标记——
+    // 恢复后按恢复的草稿重建，用户故事 9；只清 menuText 的话，让位前按过 Esc 而
+    // 恢复的草稿逐字节相同时菜单会保持收起）。resume 后 start() 里 refreshMenu 重建。
     menuText = null;
     paintedMenuRows = 0;
+    menuDismissed = false;
+    menuLineSeen = null;
     rl = null;
     interactive = false;
     liveText = null;
@@ -701,6 +716,7 @@ export function createInputReader({
     rl.line = String(text);
     rl.cursor = rl.line.length;
     refreshLine();
+    refreshMenu(); // 行模型直改不走 _ttyWrite：菜单按新行内容重算（复查确立的唯一残留入口）
   }
 
   return { start, stop, suspend, resume, composer, replaceDraft };
