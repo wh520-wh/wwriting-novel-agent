@@ -46,19 +46,25 @@ function tick() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-test('Tab 补全命令仍留在唯一输入框内，替换草稿不触发发送', async () => {
+test('Tab 补全菜单高亮项进草稿：带尾空格、菜单收起、不触发发送', async () => {
   const stdin = makeFakeTTY();
   const stdout = makeSink({ tty: true });
   const submitted = [];
-  const reader = createInputReader({ stdin, stdout, env: {}, commands: ['/model', '/resume'],
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' },
+    menuCommands: [{ name: '/model', description: '设置模型' }, { name: '/resume', description: '切换会话' }],
     onSubmit: (text) => submitted.push(text) });
   reader.start();
   try {
-    stdin.write('/mo\t');
+    stdin.write('/mo');
     await tick();
-    assert.ok(screenText(stdout.text()).includes('❯ /model'));
+    assert.ok(screenText(stdout.text()).includes('❯ /model'), '前置：菜单在场');
+    stdin.write('\t');
+    await tick();
+    const screen = screenText(stdout.text());
+    assert.ok(screen.includes('❯ /model'), '补全写进输入行（画面解释器裁掉尾空格）');
+    assert.equal(screen.includes('↑/↓ 选择'), false, '补全后 token 结束，菜单收起');
+    assert.deepEqual(submitted, [], '补全不是提交');
     reader.replaceDraft('/resume ');
-    assert.deepEqual(submitted, []);
     stdin.write('\r');
     await tick();
     assert.deepEqual(submitted, ['/resume ']);
@@ -67,25 +73,49 @@ test('Tab 补全命令仍留在唯一输入框内，替换草稿不触发发送'
   }
 });
 
-test('Shift+Tab 不触发补全，作为 mode-cycle 控制事件上报（ADR-0020）', async () => {
+test('Tab 在菜单关闭时被吞掉：普通文本里无操作，字面 \\t 绝不进草稿', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const submitted = [];
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' },
+    menuCommands: [{ name: '/model', description: '设置模型' }],
+    onSubmit: (text) => submitted.push(text) });
+  reader.start();
+  try {
+    stdin.write('写第一章');
+    await tick();
+    const before = stdout.text();
+    stdin.write('\t');
+    await tick();
+    assert.equal(stdout.text().slice(before.length), '', 'Tab 一个字节都不产生屏幕变化');
+    stdin.write('\r');
+    await tick();
+    assert.deepEqual(submitted, ['写第一章'], '草稿里没有混入 \\t');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('Shift+Tab 不触发菜单补全，作为 mode-cycle 控制事件上报（ADR-0020）', async () => {
   const stdin = makeFakeTTY();
   const stdout = makeSink({ tty: true });
   const submitted = [];
   const controls = [];
-  const reader = createInputReader({ stdin, stdout, env: {}, commands: ['/model', '/resume'],
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' },
+    menuCommands: [{ name: '/model', description: '设置模型' }, { name: '/resume', description: '切换会话' }],
     onSubmit: (text) => submitted.push(text),
     onControl: (name) => controls.push(name) });
   reader.start();
   try {
-    // 同一批字节里带着待补全的前缀：没有拦截的话 Shift+Tab 会把 /mo 补成 /model（实测行为）。
+    // 同一批字节里带着待补全的前缀：没有拦截的话 Shift+Tab 会被当成 Tab 触发补全（实测行为）。
     stdin.write('/mo\x1b[Z');
     await tick();
     const screen = screenText(stdout.text());
     assert.ok(screen.includes('❯ /mo'), `草稿保持原样：${screen}`);
-    assert.ok(!screen.includes('❯ /model'), `绝不能触发命令补全：${screen}`);
     assert.deepEqual(controls, ['mode-cycle']);
     assert.deepEqual(submitted, []);
-    // 普通按键照常透传：拦截层不能吞掉别人的键。
+    // 普通按键照常透传：拦截层不能吞掉别人的键。补全若真的发生过，
+    // 草稿会是 '/model w' 而不是 '/mow'——提交值就是证据。
     stdin.write('w\r');
     await tick();
     assert.deepEqual(submitted, ['/mow']);
@@ -1041,6 +1071,129 @@ test('联想菜单：恢复让位前的命令草稿时按行内容重建（用�
     const screen = screenText(stdout.text());
     assert.ok(screen.includes('❯ /re'), `草稿已写回：${screen}`);
     assert.ok(screen.includes('↑/↓ 选择'), '菜单按恢复的草稿重建');
+  } finally {
+    reader.stop();
+  }
+});
+
+// —— 菜单按键（工单 06）：↑↓ 导航、Esc 收起与重开、回车提交原文、转义歧义窗口 ——
+
+test('菜单开着时 ↑↓ 移动高亮（循环）、不翻历史', async () => {
+  const stdout = makeSink({ tty: true });
+  const { stdin, reader } = makeMenuReader(stdout);
+  reader.start();
+  try {
+    stdin.write('/');
+    await tick();
+    stdin.write('\x1b[A'); // ↑：从第一条循环到最后一条
+    await tick();
+    const lines = screenText(stdout.text()).split('\n');
+    assert.ok(lines.some((line) => line.startsWith('❯ /stop')), `↑ 循环到最后一条：${JSON.stringify(lines)}`);
+    assert.ok(!lines.some((line) => line.startsWith('❯ /model')), '第一条不再高亮');
+    stdin.write('\x1b[B'); // ↓：回到第一条
+    await tick();
+    const after = screenText(stdout.text()).split('\n');
+    assert.ok(after.some((line) => line.startsWith('❯ /model')), '↓ 回到第一条');
+    assert.ok(after.some((line) => line.trim() === '❯ /'), '草稿纹丝不动：方向键不往行里塞东西');
+    // 菜单态回车提交原文，绝不报错
+    stdin.write('\r');
+    await tick();
+    assert.equal(screenText(stdout.text()).includes('提交失败'), false);
+  } finally {
+    reader.stop();
+  }
+});
+
+test('Esc 收起菜单，行内容一变即重开（「再打字重开」）', async () => {
+  const stdout = makeSink({ tty: true });
+  const { stdin, reader } = makeMenuReader(stdout);
+  reader.start();
+  try {
+    stdin.write('/s');
+    await tick();
+    assert.ok(screenText(stdout.text()).includes('↑/↓ 选择'), '前置：菜单在场');
+    stdin.write('\x1b');
+    await new Promise((resolve) => setTimeout(resolve, 90)); // Esc 经 50ms 歧义窗口后独立落地
+    assert.equal(screenText(stdout.text()).includes('↑/↓ 选择'), false, 'Esc 收起');
+    stdin.write('\x7f'); // 退格改变行内容：菜单重开
+    await tick();
+    assert.ok(screenText(stdout.text()).includes('↑/↓ 选择'), '行一变菜单重开');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('菜单开着按回车提交原文：/mo 直接回车不是 /model（不替用户猜）', async () => {
+  const stdout = makeSink({ tty: true });
+  const submitted = [];
+  const stdin = makeFakeTTY();
+  const reader = createInputReader({
+    stdin, stdout, env: { NO_COLOR: '1' },
+    menuCommands: MENU_ITEMS,
+    onSubmit: (text) => submitted.push(text),
+  });
+  reader.start();
+  try {
+    stdin.write('/mo');
+    await tick();
+    stdin.write('\r');
+    await tick();
+    assert.deepEqual(submitted, ['/mo'], '回车提交的是原文，不是高亮项');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('裸 / 回车是无操作：不提交、屏幕不变（弹窗退役，工单 06）', async () => {
+  const stdout = makeSink({ tty: true });
+  const submitted = [];
+  const stdin = makeFakeTTY();
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' }, onSubmit: (text) => submitted.push(text), menuCommands: MENU_ITEMS });
+  reader.start();
+  try {
+    stdin.write('/');
+    await tick();
+    const before = stdout.text();
+    stdin.write('\r');
+    await tick();
+    assert.deepEqual(submitted, [], '裸 / 不提交');
+    assert.equal(screenText(stdout.text()).includes('提交失败'), false);
+    assert.ok(screenText(stdout.text()).includes('❯'), '框照常画回');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('Esc 之后的字符不丢：转义歧义窗口已收口（escapeCodeTimeout）', async () => {
+  const stdout = makeSink({ tty: true });
+  const { stdin, reader } = makeMenuReader(stdout);
+  reader.start();
+  try {
+    stdin.write('/');
+    await tick();
+    stdin.write('\x1b');           // Esc：50ms 后作为独立按键落地（默认 500ms 会等下一次键合并）
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    assert.equal(screenText(stdout.text()).includes('↑/↓ 选择'), false, 'Esc 已收起菜单');
+    stdin.write('m');              // 90ms 后才到的字符必须原样进草稿
+    await tick();
+    assert.ok(screenText(stdout.text()).includes('❯ /m'), `Esc 后打字不丢字：${JSON.stringify(screenText(stdout.text()))}`);
+  } finally {
+    reader.stop();
+  }
+});
+
+test('meta + 单字符（同批合并残骸）剥掉 meta 按普通字符重注：字符不丢', async () => {
+  const stdout = makeSink({ tty: true });
+  const submitted = [];
+  const stdin = makeFakeTTY();
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' }, onSubmit: (text) => submitted.push(text) });
+  reader.start();
+  try {
+    stdin.write('\x1bm'); // Esc 与 m 同批到达：Node 归一为 meta+m，字符会被吞
+    await tick();
+    stdin.write('\r');
+    await tick();
+    assert.deepEqual(submitted, ['m'], '合并残骸按普通字符进草稿');
   } finally {
     reader.stop();
   }

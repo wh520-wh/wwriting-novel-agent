@@ -337,25 +337,34 @@ async function scenario(respond, paths = null) {
   return { appDataRoot, workspace, model };
 }
 
-test('斜杠菜单用方向键选择，只补全草稿；Esc 返回输入框且不触发模型请求', { timeout: 15000 }, async () => {
+test('斜杠菜单：打 / 即联想、方向键换高亮、Tab 只补全草稿、Esc 收起且不触发模型请求', { timeout: 15000 }, async () => {
   const { appDataRoot, workspace, model } = await scenario(() => textTurn('不应调用'));
   const run = makeIo({ appDataRoot, cwd: workspace });
   const completion = main(['--cwd', workspace], run.io);
+  const screen = () => screenText(run.stdout.text(), { cols: 80, rows: 60 });
   try {
     await waitFor(() => run.stdout.text().includes('开始新会话'));
-    run.stdin.write('/\r');
-    await waitFor(() => run.stdout.text().includes('建立或更新项目记忆'));
-    // ↓×12：菜单按 HELP_COMMANDS 顺序排，/retry 入表后 /help 在第 13 项（索引 12）。
+    // 打 `/` 菜单即现（不等回车）：命令按 HELP_COMMANDS 顺序，/init 高亮。
+    run.stdin.write('/');
+    await waitFor(() => screen().includes('❯ /init'), '菜单出现');
+    // ↓×12：/help 在第 13 项（索引 12），高亮跟手。
     run.stdin.write('\x1b[B'.repeat(12));
-    run.stdin.write('\r');
-    await waitFor(() => screenText(run.stdout.text(), { cols: 80, rows: 60 }).includes('❯ /help'));
+    await waitFor(() => screen().includes('❯ /help'), '高亮移到 /help');
+    // Tab 只补全草稿：/help 进输入框、菜单收起（提示行消失），模型一次都没被打扰。
+    run.stdin.write('\t');
+    await waitFor(() => screen().includes('❯ /help') && !screen().includes('↑/↓ 选择'), 'Tab 补全并收起菜单');
     assert.equal(model.requests.length, 0, '选择命令不等于执行命令');
+    // 回车提交原文 → 命令就地执行。
     run.stdin.write('\r');
-    await waitFor(() => run.stdout.text().includes('可用命令'));
-    run.stdin.write('/\r');
-    await waitFor(() => screenText(run.stdout.text(), { cols: 80, rows: 60 }).includes('↑/↓ 选择'));
+    await waitFor(() => run.stdout.text().includes('可用命令'), '/help 执行');
+    assert.equal(model.requests.length, 0);
+    // 菜单随输入重开；Esc 收起；退格清掉草稿里的 `/`（行内容一变菜单状态解封，屏幕无菜单）。
+    run.stdin.write('/');
+    await waitFor(() => screen().includes('↑/↓ 选择'), '菜单重开');
     run.stdin.write('\x1b');
-    await waitFor(() => !screenText(run.stdout.text(), { cols: 80, rows: 60 }).includes('↑/↓ 选择'));
+    await waitFor(() => !screen().includes('↑/↓ 选择'), 'Esc 收起');
+    run.stdin.write('\x7f');
+    await waitFor(() => screen().includes('❯\n') || screen().trimEnd().endsWith('❯'), '草稿清空');
     assert.equal(model.requests.length, 0);
     await quit(run.io, run.stdin, completion, run.stdout);
   } finally {

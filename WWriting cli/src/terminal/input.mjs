@@ -35,7 +35,7 @@ import {
   USER_MARK, paintText, resolveColor,
 } from './style.mjs';
 import { displayWidth, resolveColumns, clipToWidth, fullWidthRuleLine, fullWidthRuleParts } from './metrics.mjs';
-import { MENU_HINT, slashMenu } from './menu.mjs';
+import { MENU_HINT, cycleIndex, slashMenu } from './menu.mjs';
 
 // 提示符与用户行标记是同一个字符（renderer 的 USER_MARK），屏幕上「❯ 开头」永远是用户说的。
 // 有颜色时用它上色：提示符是这条对话面上最需要一眼认出的东西。
@@ -140,7 +140,6 @@ export function createInputReader({
   onSubmit = null,
   onControl = null,
   prompt = null,
-  commands = [],
   menuCommands = [],
 } = {}) {
   const noticeTarget = stderr ?? stdout;
@@ -163,14 +162,17 @@ export function createInputReader({
   // 联想菜单（工单 04/05）：menuText 是屏幕上那一帧预上色文本（null = 没画/已收），
   // paintedMenuRows 是**那一帧**的物理行数——擦除按它走（旧高纪律）：菜单变矮时若按
   // 新高上移，旧菜单的顶部行会残留在块顶之上（缺陷 10 同族）。menuSelected 跨键保持
-  // 高亮位，行变化后由内核钳回合法位。
+  // 高亮位，行变化后由内核钳回合法位。menuDismissed 是 Esc 的收起标记：收起之后
+  // 行内容一变就解封（「再打字重开」）；menuLineSeen 用来发现「行变了」。
   let menuText = null;
   let paintedMenuRows = 0;
   let menuSelected = 0;
+  let menuDismissed = false;
+  let menuLineSeen = null;
   // suspend 前带走的半行草稿（缺陷猎捕报告 3）。suspend 会真的关掉 readline：
   // 已键入的半行既不在缓冲也不在历史里，不显式承接就是无声销毁——屏幕上和缓冲里双双消失。
-  // 恢复时原样写回（含光标位置）。带控制字符的半行不接（会被 readline 当按键解释，比如
-  // \t 触发补全）；那种输入本来就进不了正常草稿，宁可不接也不能替用户按错键。
+  // 恢复时原样写回（含光标位置）。带控制字符的半行不接（会被 readline 当按键解释）；
+  // 那种输入本来就进不了正常草稿——Tab 已在拦截层吞掉（工单 06），这条正则留作兜底。
   let draftBackup = null;
 
   const promptText = () => prompt ?? promptFor({ stdout, env });
@@ -363,12 +365,52 @@ export function createInputReader({
     if (typeof instance._ttyWrite !== 'function') return;
     const ttyWrite = instance._ttyWrite.bind(instance);
     instance._ttyWrite = (s, key) => {
+      // —— 先于 readline 消费的拦截（Shift+Tab / Ctrl+S / 菜单态按键 / Tab）——
       if (key && key.name === 'tab' && key.shift === true) {
         emitControl('mode-cycle');
         return;
       }
       if (key && key.ctrl === true && key.name === 's') {
         submitImmediate();
+        return;
+      }
+      if (key && menuOpen() && (key.name === 'up' || key.name === 'down')) {
+        // 菜单态方向键 = 移动高亮（循环），绝不翻历史；不交给 readline。
+        const state = slashMenu({ line: rl.line, commands: menuCommands, selected: menuSelected });
+        if (state.open) {
+          menuSelected = cycleIndex(state.index, key.name === 'up' ? -1 : 1, state.matches.length);
+          menuText = renderMenu({ ...state, index: menuSelected });
+          if (areaDrawn) drawArea();
+          return;
+        }
+      }
+      if (key && menuOpen() && key.name === 'escape') {
+        // Esc = 收起菜单；行内容一变即重开（refreshMenu 的解封纪律）。
+        menuDismissed = true;
+        refreshMenu();
+        return;
+      }
+      if (key && key.name === 'tab' && key.shift !== true) {
+        // Tab：菜单开着 = 补全高亮项（补全后带尾空格，token 结束菜单随之收起）；
+        // 菜单关着 = 吞掉（保持「普通文本里 Tab 无操作」，也绝不让字面 \t 进草稿）。
+        if (menuOpen()) {
+          const state = slashMenu({ line: rl.line, commands: menuCommands, selected: menuSelected });
+          if (state.open && typeof state.completion === 'string') {
+            rl.line = state.completion;
+            rl.cursor = rl.line.length;
+            refreshLine();
+            refreshMenu();
+          }
+        }
+        return;
+      }
+      if (key && key.meta === true && key.ctrl !== true && typeof key.name === 'string'
+        && key.name.length === 1) {
+        // meta + 单字符 = 转义歧义窗口的合并残骸（Esc 与下一键同批到达，字符会被
+        // readline 静默丢掉）。剥掉 meta 按普通字符重注：本应用不用 Alt 组合键，
+        // 宁可放弃它们也不能丢字（escapeCodeTimeout 收口之外的双保险）。
+        ttyWrite(key.name, { name: key.name, meta: false, shift: key.shift === true });
+        refreshMenu();
         return;
       }
       if (key && (key.name === 'return' || key.name === 'enter')) {
@@ -382,12 +424,13 @@ export function createInputReader({
 
   // 提交簿记：回车（line 事件）与 Ctrl+S 共用同一份——擦框、越过框沿、回调、重画框。
   // 两路只有一个差别：回车的换行回显由 readline 自己写过了，Ctrl+S 由调用方先补。
-  // 空行（trim 后为空）一律丢弃，绝不当一次提交送进 Agent；框原样画回来。
+  // 两条丢弃闸：空行（trim 后为空）绝不当提交送进 Agent；裸斜杠 `/` 也不提交——
+  // 菜单退役了「空 / 回车开弹窗」的旧交互（工单 06），回车在这里就是无操作。
   function emitSubmission(text, { immediate = false } = {}) {
     const hadBox = areaDrawn;
     areaDrawn = false;
     liveText = null;
-    if (text.trim() === '') {
+    if (text.trim() === '' || text.trim() === '/') {
       promptOnce();
       return;
     }
@@ -449,17 +492,25 @@ export function createInputReader({
 
   // 菜单随行内容重算：打字、粘贴、删减全部经过 _ttyWrite，这里是唯一的出口。
   // 内容没变就不动屏幕；变了整块重画（drawArea 的擦除按 paintedMenuRows 旧高走）。
-  // 非交互 / 没配清单时不启用；让位期间 areaDrawn 为假，只记账不画屏。
+  // Esc 收起（menuDismissed）在行内容一变时解封；非交互 / 没配清单时不启用；
+  // 让位期间 areaDrawn 为假，只记账不画屏。
   function refreshMenu() {
     if (rl === null || !interactive || menuCommands.length === 0) return;
     const line = typeof rl.line === 'string' ? rl.line : '';
+    if (line !== menuLineSeen) {
+      menuLineSeen = line;
+      menuDismissed = false;
+    }
     const state = slashMenu({ line, commands: menuCommands, selected: menuSelected });
     menuSelected = state.index;
-    const next = state.open ? renderMenu(state) : null;
+    const next = state.open && !menuDismissed ? renderMenu(state) : null;
     if (next === menuText) return;
     menuText = next;
     if (areaDrawn) drawArea();
   }
+
+  // 菜单此刻开没开（拦截层用）：以屏幕上那一帧为准——refreshMenu 在每次按键后都会刷新它。
+  const menuOpen = () => menuText !== null;
 
   // 菜单不进历史：回车接受 / Ctrl+S 交出草稿**之前**把菜单行从屏幕上清成空行。
   // 必须在行模型还有效的时刻调用（两处调用点都在拦截层，几何此刻算得准）。
@@ -540,7 +591,10 @@ export function createInputReader({
       output: stdout,
       terminal: interactive,
       prompt: interactive ? promptText() : undefined,
-      completer: (line) => [commands.filter((name) => name.startsWith(line)), line],
+      // 转义歧义窗口收口（工单 06）：默认 500ms 会让「Esc 后 500ms 内的下一个字」被
+      // 吞掉、Esc 与方向键被合并成无效序列——菜单把 Esc 变成常用键之后不可接受。
+      // 50ms 内完整序列（方向键等）单次写入到达，不受影响。
+      escapeCodeTimeout: 50,
     });
     attachAreaHooks(rl);
     attachKeysHook(rl);

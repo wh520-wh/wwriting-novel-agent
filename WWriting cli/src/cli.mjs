@@ -120,9 +120,8 @@ export async function main(
     menuCommands: HELP_COMMANDS.map(([name, description]) => ({ name, description })),
     // 不 await：controller.submit() 会等到本轮 + 队列 drain 结束，await 会把输入框堵死（D15）。
     // immediate（Ctrl+S）原样透传：命令草稿与回车完全同路，「立即」只作用于普通正文。
-    onSubmit: (text, { immediate = false } = {}) => {
-      void (text.trim() === '/' ? chooseCommand() : handler.handle(text, { immediate }));
-    },
+    // 裸 `/` 由输入层丢弃（工单 06）：弹窗退役后，「空 / + 回车」不再有任何动作。
+    onSubmit: (text, { immediate = false } = {}) => { void handler.handle(text, { immediate }); },
     onControl: (name) => { void handler.handleControl(name); },
   });
 
@@ -151,28 +150,10 @@ export async function main(
   const { withInputSuspended } = createInputYielder({ input });
 
   // 让位下的选择器会话：让位、ask、恢复与取消归一都收在 pickers.mjs，这里是它唯一的实例。
-  // 每个调用方只声明自己的取消语义（菜单不动草稿 / 挑选静默取消 / 确认卡按拒绝读）。
+  // 每个调用方只声明自己的取消语义（挑选静默取消 / 确认卡按拒绝读）。
+  // 「空 / + 回车开命令菜单」的弹窗已退役（工单 06）：命令发现交给输入中的联想菜单，
+  // 这里不再有 chooseCommand——省掉「弹窗与权限确认卡抢键」的忙碌分支。
   const pick = createMenuPicker({ selector: decisionSelector, withInputSuspended });
-
-  async function chooseCommand() {
-    try {
-      // 控制器忙（跑轮或消化队列）时可能随时弹出权限选择器；此时复用静态帮助，避免两个菜单抢键。
-      // 忙碌口径收在控制器里（isBusy，含 drain 占位窗口），这里不再从投影自己猜。
-      if (controller.isBusy()) {
-        await handler.handle('/help');
-        return;
-      }
-      const picked = await pick({
-        title: '命令',
-        items: HELP_COMMANDS.map(([id, description]) => ({ id, label: id, description })),
-        summary: null,
-        hint: '↑/↓ 选择 · 回车确认 · Esc 取消',
-      });
-      if (picked) input.replaceDraft(`${picked.item.id} `);
-    } catch (error) {
-      renderer.printStatus('读取失败', { final: true, tone: 'error', detail: fact(error) });
-    }
-  }
 
   // 普通权限确认卡：pending → 选择器作答 → decide()。作答翻译、deny 读法、重入保护与
   // 两条事实（确认已失效 / 确认失败）都住在 decisions.mjs；这里只注入这台终端的通道。
