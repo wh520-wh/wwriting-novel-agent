@@ -6,11 +6,16 @@
 //   4. 恢复事实以 session_recovered 事件落盘，投影 status 置为 interrupted，
 //      直到下一次 run_started 才回到 active。
 // 干净关闭的会话重新打开时 recoverSession 不追加任何事件（幂等）。
+//
+// 投影来自**写者缓存**（currentProjection）而不是 rebuildProjection 的全量重折：
+// openWriter 里 recoverSession 紧跟 repair() 之后，缓存刚从日志装载（锚点快路或全量），
+// 内容与磁盘折算恒等，再全量读一遍等于把打开成本白白拉回 O(日志)（规格 2026-10-06 T3）。
+// 单写者纪律下缓存即权威；调用方必须已装载缓存（repair/currentProjection 先行）。
 export async function recoverSession({ eventStore, truncatedTail = false } = {}) {
-  if (!eventStore || typeof eventStore.rebuildProjection !== 'function' || typeof eventStore.appendBatch !== 'function') {
+  if (!eventStore || typeof eventStore.currentProjection !== 'function' || typeof eventStore.appendBatch !== 'function') {
     throw new Error('恢复需要有效的事件存储。');
   }
-  const { projection } = await eventStore.rebuildProjection();
+  const projection = await eventStore.currentProjection();
   // 单一活跃 Run 不变量：同一时刻最多一个未闭合 Run。
   const interruptedRunIds = projection.active_run_id === null ? [] : [projection.active_run_id];
   if (interruptedRunIds.length === 0) {

@@ -16,8 +16,10 @@ const TAIL_CHUNK_BYTES = 256 * 1024;
 // 锚点校验窗（tryLoadFromAnchor）：只需罩住最后一个写入批次，见 tryLoadFromAnchor 的注释。
 const ANCHOR_WINDOW_BYTES = 1024 * 1024;
 
-// 锚点封面校验：形状齐全才可作投影初值。turns 的在位兼作版本标记（封面化之前的
-// state.json 没有它，一律回退全量，重开一次即被 repair 重写成新形状）。
+// 锚点封面校验：形状齐全才可作投影初值。turns 与 digest 的在位**共同**兼作版本标记：
+// 封面化（T1）先于摘要进投影（T2），只查 turns 会放行「有 turns 无 digest」的中间形状——
+// 那种封面命中锚点会把已压缩会话当成从未压缩（被覆盖轮次以原文回灌上下文，记忆丢失），
+// 所以两个键必须同时在位，缺一律回退全量折算，重开一次即被 repair 重写成新形状。
 function validAnchorProjection(state) {
   if (state === null || typeof state !== 'object' || Array.isArray(state)) return false;
   if (typeof state.session_id !== 'string' || state.session_id === '') return false;
@@ -26,6 +28,12 @@ function validAnchorProjection(state) {
   if (typeof state.status !== 'string' || state.status === '') return false;
   if (typeof state.updated_at !== 'string' || state.updated_at === '') return false;
   if (!Array.isArray(state.queue) || !Array.isArray(state.transient_grants)) return false;
+  if (!('digest' in state)) return false;
+  if (state.digest !== null && (typeof state.digest !== 'object' || Array.isArray(state.digest))) return false;
+  if (state.active_run_id !== null && typeof state.active_run_id !== 'string') return false;
+  if (state.active_input_id !== null && typeof state.active_input_id !== 'string') return false;
+  if (state.active_input !== null && (typeof state.active_input !== 'object' || Array.isArray(state.active_input))) return false;
+  if (state.plan !== null && (typeof state.plan !== 'object' || Array.isArray(state.plan))) return false;
   return true;
 }
 
@@ -379,6 +387,10 @@ export function createEventStore({ sessionDir, clock = Date.now, idFactory = ran
       }
 
       // 组间倒排（回读次序 → 文件次序），组内本就升序。
+      // ⚠️ removedBytes / keepBytes 的语义边界：窗口被 byteLimit 截断**且零完整行**时，
+      // removedBytes 只是窗口视图值（= 已读字节数），不是真实残尾长——keepBytes 会偏大。
+      // 当前唯一消费方 tryLoadFromAnchor 被「锚点命中 ⟹ 残尾起点必在窗内 ⟹ 簿记精确」
+      // 这条蕴含关系守卫；未来任何在 byteLimit 状态下拿这两个值截断日志的消费者必须先扩窗。
       const lines = [];
       for (let i = found.length - 1; i >= 0; i -= 1) lines.push(...found[i]);
       const events = lines.map((line) => parseLine(line.toString('utf8'), 0));
@@ -450,7 +462,6 @@ export function createEventStore({ sessionDir, clock = Date.now, idFactory = ran
     if (anchorEvent === undefined || anchorEvent.session_id !== state.session_id) return null;
 
     const projection = state;
-    projection.digest = projection.digest ?? null;
     const fold = { projection, inputs: new Map() };
     for (const event of tail.events) {
       if (event.seq > state.last_seq) applyEvent(fold, event);

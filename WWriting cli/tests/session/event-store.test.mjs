@@ -654,3 +654,42 @@ test('锚点 + 残尾并存：repair 照旧截断并补恢复事件，日志 seq
   const projection = await reopened.currentProjection();
   assert.equal(projection.last_seq, 5);
 });
+
+test('锚点版本标记：有 turns 无 digest 的中间形状封面不采信（T1/T2 之间的形状缺口封死）', async () => {
+  const root = await makeTempRoot('wwriting-evt-anchor-t1shape-');
+  const dir = path.join(root, 'sess-1');
+  const writer = makeStore(dir);
+  await writer.append({ type: 'session_created', session_id: 'sess-1', data: {} });
+  await writer.append({ type: 'input_submitted', session_id: 'sess-1', data: { input_id: 'in-1', text: '写' } });
+  await writer.append({ type: 'run_started', session_id: 'sess-1', run_id: 'run-1', data: { input_id: 'in-1', text: '写' } });
+  await writer.append({ type: 'run_completed', session_id: 'sess-1', run_id: 'run-1', data: {} });
+  await writer.append({ type: 'digest_compacted', session_id: 'sess-1', data: { digest: '已有的摘要。', through_seq: 4, chars: 6, covered_turns: 1, covered_total: 1 } });
+
+  // T1 形状：turns 在位但封面缺 digest 键——若放行，已压缩会话会被当成从未压缩（记忆丢失）。
+  const t1Shape = JSON.parse(coverJson({ turns: 1 }));
+  delete t1Shape.digest;
+  await fs.writeFile(path.join(dir, 'state.json'), `${JSON.stringify(t1Shape, null, 2)}\n`, 'utf8');
+
+  const reopened = makeStore(dir);
+  const projection = await reopened.currentProjection();
+  assert.equal(projection.digest.text, '已有的摘要。', '回退全量折算：摘要从日志如实恢复');
+  assert.equal(projection.digest.covered_total, 1);
+});
+
+test('锚点封面畸形字段不设防即回退：digest 是字符串 / active_run_id 是数字', async () => {
+  async function makeCase(prefix, overrides) {
+    const root = await makeTempRoot(prefix);
+    const dir = path.join(root, 'sess-1');
+    const writer = makeStore(dir);
+    await writer.append({ type: 'session_created', session_id: 'sess-1', data: {} });
+    await writer.append({ type: 'run_started', session_id: 'sess-1', run_id: 'run-1', data: {} });
+    await writer.append({ type: 'run_completed', session_id: 'sess-1', run_id: 'run-1', data: {} });
+    await fs.writeFile(path.join(dir, 'state.json'), coverJson(overrides), 'utf8');
+    return dir;
+  }
+  const badDigest = await makeCase('wwriting-evt-anchor-baddigest-', { digest: '不是对象' });
+  assert.equal((await makeStore(badDigest).currentProjection()).status, 'idle', '畸形 digest → 回退全量');
+
+  const badRunId = await makeCase('wwriting-evt-anchor-badrunid-', { active_run_id: 42 });
+  assert.equal((await makeStore(badRunId).currentProjection()).status, 'idle', '畸形 active_run_id → 回退全量');
+});
