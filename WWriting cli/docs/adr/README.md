@@ -27,6 +27,9 @@
 | [0018](./0018-terminal-motion-discipline.md) | 终端动效纪律 = 唯一受控 spinner，运行态才推进，终态 0 循环动效 |
 | [0019](./0019-prose-vertical-rhythm.md) | 正文垂直节奏 = 致密块矩阵 + 正文→UI 单空行，模型原文空行照旧透传 |
 | [0020](./0020-permission-mode-shift-tab.md) | Shift+Tab 二态环切换权限模式（普通 ↔ YOLO），进 YOLO 需确认卡，仅空闲可切 |
+| [0021](./0021-ctrl-s-immediate-submit.md) | Ctrl+S 立即提交：草稿成为下一条活动输入，有活动轮先打断（终端侧有意偏离上游 P3） |
+| [0022](./0022-slash-menu-enter-submits.md) | 斜杠菜单回车提交原文，有意偏离上游 §4.7 的「Enter 只填入不执行」 |
+| [0023](./0023-now-interrupt-promote.md) | `/now` 保留打断式提升（裁决 A3）：打断当前轮、同一 drain 接手，有意偏离上游 P3 |
 
 > 0006–0008 是 `WWRITING.md` 项目记忆的设计决策（铁律 7）。并发写语义已随 Q12 拍板（最后写者赢，
 > 防线是确认卡显示变更）；`/init` 更新契约经 2026-09-28 对抗性审查收敛为
