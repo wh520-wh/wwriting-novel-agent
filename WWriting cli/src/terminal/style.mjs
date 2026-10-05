@@ -53,9 +53,12 @@ const TONE = Object.freeze({
 export const SPINNER_FRAMES = Object.freeze(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']);
 export const SPINNER_INTERVAL_MS = 120;
 
-// 权限模式（ADR-0020）：YOLO 期间常驻输入框上方的警示 chip，唯一文案来源。
-// UI 统一大写 `YOLO`（上游规格 §4）；P8 权限警告必须保留，它就是要常驻的那条。
-export const YOLO_CHIP = 'YOLO · 自动执行写入';
+// 权限模式常驻标签（工单 02）：嵌在输入框上框线右端，双态常驻——普通也显示。
+// 用词按用户指定为专有名词，不译（铁律 10 的中文要求让位于用户明示指令）；
+// 文字本身就是区分手段（NO_COLOR 下照常可辨），色彩只是增强。
+// 文案与色调都只有这一份来源（ADR-0020 的实时区 chip 已由它取代，见该 ADR 修订注）。
+export const MODE_TAG = Object.freeze({ normal: 'Normal', yolo: 'YOLO' });
+export const MODE_TAG_TONE = Object.freeze({ normal: 'info', yolo: 'warn' });
 
 // 用户行标记：与输入提示符是同一个字符，视觉上「这一行是我说的」。
 // 铁律 9 只说 Agent 消息不带头像与署名，用户行有自己的标记不冲突。

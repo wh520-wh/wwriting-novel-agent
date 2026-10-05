@@ -40,8 +40,8 @@ import { createDecisionCard } from './terminal/decisions.mjs';
 import { createMenuPicker, sessionPickerItems } from './terminal/pickers.mjs';
 import { createSelector } from './terminal/select.mjs';
 import { STEP_HINT, createOnboarding } from './terminal/onboarding.mjs';
-// 权限模式警示 chip 的文案只有一份：style.mjs（ADR-0020）。
-import { YOLO_CHIP } from './terminal/style.mjs';
+// 权限模式常驻标签的文案与色调只有一份：style.mjs（工单 02；ADR-0020 的实时区 chip 已取代）。
+import { MODE_TAG, MODE_TAG_TONE } from './terminal/style.mjs';
 
 const EXIT_OK = 0;
 // 启动 / 运行期故障：只呈现一条中文事实。
@@ -325,7 +325,8 @@ export async function main(
   // 权限模式的会话内状态（ADR-0020：跟会话走，不持久化；/resume 换控制器时重置为普通）。
   // 真相只有这一份：翻转时同步写入当前控制器的权限层（permissions.setYolo——YOLO 在
   // permissions.mjs 里只跳过 write 级确认，extreme 与项目外不放行，语义不在这里改），
-  // 并同步实时区的警示 chip：它是「下一次输入将以什么权限执行」的常驻告示。
+  // 并同步上框线右端的常驻标签（工单 02）：双态常驻，普通也显示——用户时时刻刻都该
+  // 知道下一次输入将以什么权限执行。
   let permissionYolo = false;
   const permissionMode = {
     get: () => (permissionYolo ? 'yolo' : 'normal'),
@@ -334,9 +335,12 @@ export async function main(
       // 控制器尚未打开时只记状态：输入层在控制器开好之后才启动，Shift+Tab 进不到那条路。
       // permissions 由 createRunController 保证非空且带 setYolo（run-controller.mjs 的返回契约）。
       if (controller !== null) controller.permissions.setYolo(permissionYolo);
-      renderer.setLiveMode(permissionYolo ? YOLO_CHIP : null);
+      const mode = permissionMode.get();
+      input.composer.setRuleTag({ text: MODE_TAG[mode], tone: MODE_TAG_TONE[mode] });
     },
   };
+  // 启动即常驻（工单 02）：标签在第一次画框时就带上，不等第一次切换。
+  input.composer.setRuleTag({ text: MODE_TAG.normal, tone: MODE_TAG_TONE.normal });
 
   // /resume：控制器的 sessionId 是构造期固定的，切换会话只能「开新控制器 → 换掉旧的」。
   async function switchSession(sessionId) {

@@ -34,7 +34,7 @@ import readline from 'node:readline';
 import {
   USER_MARK, paintText, resolveColor,
 } from './style.mjs';
-import { displayWidth, resolveColumns, fullWidthRuleLine } from './metrics.mjs';
+import { displayWidth, resolveColumns, fullWidthRuleLine, fullWidthRuleParts } from './metrics.mjs';
 
 // 提示符与用户行标记是同一个字符（renderer 的 USER_MARK），屏幕上「❯ 开头」永远是用户说的。
 // 有颜色时用它上色：提示符是这条对话面上最需要一眼认出的东西。
@@ -152,6 +152,9 @@ export function createInputReader({
   // 输入区此刻画在屏幕上吗？框上方那一行的实时状态是什么？
   let areaDrawn = false;
   let liveText = null;
+  // 上框线右端的常驻标签（权限模式，工单 02）：{ text, tone } | null。随 drawArea 重绘；
+  // 标签长在框线行内，行数不变，擦除几何不受影响——变了只是整块多画一次。
+  let ruleTag = null;
   // 下框线最后一次补画时的输入物理行数（paintBelowPrompt 维护）。快速回显路径靠
   // 「当前行数 ≠ 它」发现框线没跟上折行（真机 ConPTY 走查发现的顶穿残留）。
   let paintedRows = 0;
@@ -163,6 +166,14 @@ export function createInputReader({
 
   const promptText = () => prompt ?? promptFor({ stdout, env });
   const rule = () => paintText(fullWidthRuleLine({ columns: stdout.columns }), 'rule', useColor);
+
+  // 上框线（可带右端常驻标签）：线与标签分别上色，版式由 fullWidthRuleParts 定。
+  // 下框线永远素线——标签只在上框线，快速补线路径（paintBelowPrompt）不加变量。
+  const topRule = () => {
+    const parts = fullWidthRuleParts({ columns: stdout.columns, tag: ruleTag?.text ?? '' });
+    if (parts.tag === '') return paintText(parts.rule, 'rule', useColor);
+    return `${paintText(parts.rule, 'rule', useColor)} ${paintText(parts.tag, ruleTag?.tone ?? 'info', useColor)}${parts.pad}`;
+  };
 
   // 提示符的**纯文本**宽度。带色提示符里那些 `\x1b[36m` 在终端上不占列，但按字符数算会占 9 格——
   // 用它算光标列，typed 的字就会凭空右移一大截（踩过一次）。
@@ -247,13 +258,13 @@ export function createInputReader({
     areaDrawn = false;
   }
 
-  // 在光标当前位置重画输入区：实时行（可选）→ 上框线 → 输入行 → 下框线。
+  // 在光标当前位置重画输入区：实时行（可选）→ 上框线（可带标签）→ 输入行 → 下框线。
   function drawArea(nextLive = liveText) {
     if (rl === null || !interactive) return;
     eraseArea();
     liveText = nextLive;
     if (liveText !== null) writeOut(`${liveText}\n`);
-    writeOut(`${rule()}\n`);
+    writeOut(`${topRule()}\n`);
     areaDrawn = true; // 先置位：下面的 refreshLine 会触发 paintBelowPrompt
     refreshLine();
   }
@@ -408,6 +419,18 @@ export function createInputReader({
       // 否则每推一次都要 readline 整块重排一次（思考预览会推得很密）。
       if (areaDrawn && next === liveText) return;
       drawArea(next);
+    },
+    // 上框线右端的常驻标签（权限模式，工单 02）：null = 不画。文本或色调变了才整块重画；
+    // 没在画（未启动 / 让位中）时只记状态，等 drawArea 时自然带上。
+    setRuleTag: (tag) => {
+      const next = tag && typeof tag.text === 'string' && tag.text !== ''
+        ? { text: tag.text, tone: typeof tag.tone === 'string' ? tag.tone : 'info' }
+        : null;
+      const same = (ruleTag === null && next === null)
+        || (ruleTag !== null && next !== null && ruleTag.text === next.text && ruleTag.tone === next.tone);
+      if (same) return;
+      ruleTag = next;
+      if (areaDrawn) drawArea();
     },
   };
 

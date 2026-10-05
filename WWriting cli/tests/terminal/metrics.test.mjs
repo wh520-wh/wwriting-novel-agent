@@ -6,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { contentWidth, displayWidth, fullWidthRuleLine, resolveColumns } from '../../src/terminal/metrics.mjs';
+import { contentWidth, displayWidth, fullWidthRuleLine, fullWidthRuleParts, resolveColumns } from '../../src/terminal/metrics.mjs';
 
 test('resolveColumns：正数向下取整，拿不到就兜底', () => {
   assert.equal(resolveColumns(120), 120);
@@ -41,5 +41,20 @@ test('fullWidthRuleLine：输入区全宽横线——顶格、宽 = 列数 − 1
   assert.equal(displayWidth(fullWidthRuleLine({ columns: 120, indent: 3 })), 119, 'indent 留给整块缩进的调用方：缩进计入整行，整行仍只占列数 − 1');
   assert.equal(fullWidthRuleLine({ columns: undefined }), '─'.repeat(79), '列数拿不到按 80 兜底');
   assert.equal(fullWidthRuleLine({ columns: 1 }), '─', '放不下时下限 1，不出负数');
+});
+
+test('fullWidthRuleParts：标签嵌右端、右留 2 格、整行仍占列数 − 1、放不下只画线', () => {
+  const parts = fullWidthRuleParts({ columns: 80, tag: 'Normal' });
+  assert.equal(parts.rule, '─'.repeat(70), '横线补足：79 − 6（标签）− 1（间隙）− 2（右边距）');
+  assert.equal(parts.tag, 'Normal');
+  assert.equal(parts.pad, '  ');
+  assert.equal(displayWidth(`${parts.rule} ${parts.tag}${parts.pad}`), 79, '整行（含 1 格间隙）仍只占列数 − 1');
+  assert.deepEqual(
+    fullWidthRuleParts({ columns: 80, tag: '' }),
+    { rule: '─'.repeat(79), tag: '', pad: '' },
+    '无标签 = 素线（下框线与问询框线的形态）',
+  );
+  const narrow = fullWidthRuleParts({ columns: 8, tag: 'Normal' });
+  assert.deepEqual(narrow, { rule: '─'.repeat(7), tag: '', pad: '' }, '放不下时只画线：标签是增强，线是骨架');
 });
 

@@ -154,3 +154,17 @@ export function fullWidthRuleLine({ columns, indent = 0 } = {}) {
   const width = Math.max(1, resolveColumns(columns) - inset - 1);
   return `${' '.repeat(inset)}${'─'.repeat(width)}`;
 }
+
+// 带右端标签的全宽横线：权限模式常驻标签嵌在上框线右端（工单 02）。
+// 版式：[横线][1 格间隙][标签][2 格右边距]，整行仍只占列数 − 1；调用方分别上色
+// （线与标签不同色调，间隙与右边距不上色）。放不下（标签会把横线压到不足 1 格）时
+// 只画线不画标签：标签是增强，线是骨架。
+export function fullWidthRuleParts({ columns, tag = '' } = {}) {
+  const total = Math.max(1, resolveColumns(columns) - 1);
+  const label = typeof tag === 'string' ? tag : '';
+  const labelWidth = label === '' ? 0 : displayWidth(label);
+  if (labelWidth === 0 || total - labelWidth - 3 < 1) {
+    return { rule: '─'.repeat(total), tag: '', pad: '' };
+  }
+  return { rule: '─'.repeat(total - labelWidth - 3), tag: label, pad: '  ' };
+}

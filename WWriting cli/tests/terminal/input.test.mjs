@@ -839,3 +839,57 @@ test('Ctrl+S：光标在行中时整行原样提交（先到行尾再接受，�
     reader.stop();
   }
 });
+
+test('权限模式常驻标签：Normal 双态常驻上框线右端，setRuleTag 变更即时重画且不残留', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' }, onSubmit: () => {} });
+  reader.composer.setRuleTag({ text: 'Normal', tone: 'info' });
+  reader.start();
+  try {
+    const screen = screenText(stdout.text());
+    assert.match(screen, /─+ Normal\n❯/, '上框线右端带 Normal 标签（1 格间隙 + 右边距）');
+    const lines = screen.split('\n');
+    const bottomRule = lines[lines.length - 1] ?? '';
+    assert.doesNotMatch(bottomRule, /Normal/, '下框线是素线，不承载标签');
+    reader.composer.setRuleTag({ text: 'YOLO', tone: 'warn' });
+    await tick();
+    const updated = screenText(stdout.text());
+    assert.match(updated, /─+ YOLO\n❯/, '切换后标签即时更新');
+    assert.equal(updated.includes('Normal'), false, '旧标签不残留');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('权限模式常驻标签：色彩区分——Normal 低调色、YOLO 警示色（SGR 落在原文）', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const reader = createInputReader({ stdin, stdout, env: {}, onSubmit: () => {} });
+  reader.composer.setRuleTag({ text: 'Normal', tone: 'info' });
+  reader.start();
+  try {
+    assert.ok(stdout.text().includes('\x1b[38;5;246mNormal\x1b[0m'), 'Normal 用 info（246）低调色');
+    reader.composer.setRuleTag({ text: 'YOLO', tone: 'warn' });
+    await tick();
+    assert.ok(stdout.text().includes('\x1b[38;5;179mYOLO\x1b[0m'), 'YOLO 用 warn（179）警示色');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('权限模式常驻标签：打字重绘后标签仍在——它随框线常驻，不随提交消失', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' }, onSubmit: () => {} });
+  reader.composer.setRuleTag({ text: 'YOLO', tone: 'warn' });
+  reader.start();
+  try {
+    stdin.write('写');
+    await tick();
+    const screen = screenText(stdout.text());
+    assert.match(screen, /─+ YOLO\n❯ 写/, '重绘后标签仍在框线右端');
+  } finally {
+    reader.stop();
+  }
+});
