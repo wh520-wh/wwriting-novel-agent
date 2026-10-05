@@ -493,3 +493,164 @@ test('readTail：残行跨多块时 removedBytes 精确、完整行一个不少'
   const raw = await store.readAll();
   assert.equal(raw.truncatedTail, true);
 });
+
+// —— 打开锚点（规格 2026-10-06 T3/D6）：state.json 校验在册后增量重放，否则回退全量 ——
+
+// 手工构造一份合法形状的封面（state.json）。
+function coverJson(overrides = {}) {
+  return `${JSON.stringify({
+    session_id: 'sess-1',
+    status: 'idle',
+    active_run_id: null,
+    active_input_id: null,
+    active_input: null,
+    queue: [],
+    transient_grants: [],
+    title: '',
+    created_at: iso(FIXED_MS),
+    updated_at: iso(FIXED_MS + 9000),
+    last_seq: 4,
+    turns: 1,
+    plan: null,
+    digest: null,
+    ...overrides,
+  }, null, 2)}\n`;
+}
+
+test('锚点命中：投影以封面为初值，增量事件续着折算，seq 接着走', async () => {
+  const root = await makeTempRoot('wwriting-evt-anchor-hit-');
+  const dir = path.join(root, 'sess-1');
+  const writer = makeStore(dir);
+  await writer.append({ type: 'session_created', session_id: 'sess-1', data: { title: '真标题' } });
+  await writer.append({ type: 'input_submitted', session_id: 'sess-1', data: { input_id: 'in-1', text: '写' } });
+  await writer.append({ type: 'run_started', session_id: 'sess-1', run_id: 'run-1', data: { input_id: 'in-1', text: '写' } });
+  await writer.append({ type: 'run_completed', session_id: 'sess-1', run_id: 'run-1', data: {} });
+
+  // 覆盖内容与全量折算刻意可区分（turns: 99）：命中锚点就采信封面。
+  await fs.writeFile(path.join(dir, 'state.json'), coverJson({ turns: 99, title: '封面标题' }), 'utf8');
+  const reopened = makeStore(dir);
+  const projection = await reopened.currentProjection();
+  assert.equal(projection.turns, 99, '命中锚点：采信封面而不是折算');
+  assert.equal(projection.title, '封面标题');
+
+  // 锚点之上继续写入：seq 接着走，投影在锚点之上正常演化。
+  const appended = await reopened.append({ type: 'input_submitted', session_id: 'sess-1', data: { input_id: 'in-2', text: '再写' } });
+  assert.equal(appended.seq, 5);
+  const after = await reopened.currentProjection();
+  assert.equal(after.last_seq, 5);
+  assert.equal(after.active_input_id, 'in-2');
+
+  // 锚点路径与全量路径对「干净日志」给出同一份投影（turns 99 是封面带来的，折算是 1）。
+  const rebuilt = await reopened.rebuildProjection();
+  assert.equal(rebuilt.projection.turns, 1);
+});
+
+test('锚点失效回退：last_seq 不在尾窗 / 封面损坏 / 形状不全，一律全量折算', async () => {
+  async function makeCase(prefix, cover) {
+    const root = await makeTempRoot(prefix);
+    const dir = path.join(root, 'sess-1');
+    const writer = makeStore(dir);
+    await writer.append({ type: 'session_created', session_id: 'sess-1', data: { title: '真标题' } });
+    await writer.append({ type: 'input_submitted', session_id: 'sess-1', data: { input_id: 'in-1', text: '写' } });
+    await writer.append({ type: 'run_started', session_id: 'sess-1', run_id: 'run-1', data: { input_id: 'in-1', text: '写' } });
+    await writer.append({ type: 'run_completed', session_id: 'sess-1', run_id: 'run-1', data: {} });
+    if (cover !== null) await fs.writeFile(path.join(dir, 'state.json'), cover, 'utf8');
+    return dir;
+  }
+
+  // last_seq 指向不存在的 seq（封面与日志脱节）。
+  const staleDir = await makeCase('wwriting-evt-anchor-stale-', coverJson({ last_seq: 999, turns: 99 }));
+  const stale = makeStore(staleDir);
+  const staleProjection = await stale.currentProjection();
+  assert.equal(staleProjection.turns, 1, '脱节封面不采信，回退折算');
+  assert.equal(staleProjection.title, '真标题');
+
+  // 封面坏 JSON。
+  const brokenDir = await makeCase('wwriting-evt-anchor-broken-', '{not json');
+  const broken = makeStore(brokenDir);
+  assert.equal((await broken.currentProjection()).turns, 1);
+
+  // 旧形状（无 turns 字段）。
+  const legacyDir = await makeCase('wwriting-evt-anchor-legacy-', `${JSON.stringify({
+    session_id: 'sess-1', status: 'idle', title: '真标题', updated_at: iso(FIXED_MS + 9000), last_seq: 4,
+  })}\n`);
+  const legacy = makeStore(legacyDir);
+  assert.equal((await legacy.currentProjection()).turns, 1);
+
+  // 封面缺失。
+  const missingDir = await makeCase('wwriting-evt-anchor-missing-', null);
+  const missing = makeStore(missingDir);
+  assert.equal((await missing.currentProjection()).turns, 1);
+});
+
+test('锚点 + 滞后增量：封面落后于日志一批，增量事件续着折算', async () => {
+  const root = await makeTempRoot('wwriting-evt-anchor-delta-');
+  const dir = path.join(root, 'sess-1');
+  const writer = makeStore(dir);
+  await writer.append({ type: 'session_created', session_id: 'sess-1', data: {} });
+  await writer.append({ type: 'input_submitted', session_id: 'sess-1', data: { input_id: 'in-1', text: '写' } });
+  await writer.append({ type: 'run_started', session_id: 'sess-1', run_id: 'run-1', data: { input_id: 'in-1', text: '写' } });
+  await writer.append({ type: 'run_completed', session_id: 'sess-1', run_id: 'run-1', data: {} });
+  // 模拟「append 后、写封面前」崩溃：日志到 4，封面停在 2。
+  await fs.writeFile(path.join(dir, 'state.json'), coverJson({ last_seq: 2, turns: 0, status: 'idle' }), 'utf8');
+
+  const reopened = makeStore(dir);
+  const projection = await reopened.currentProjection();
+  assert.equal(projection.last_seq, 4);
+  assert.equal(projection.turns, 1, '增量里的 run_started 也计入 turns');
+  assert.equal(projection.status, 'idle', 'run_completed 的清场跟着生效');
+});
+
+test('锚点 + 排队跨锚点：排队项文本经队列兜住，不依赖 inputs Map', async () => {
+  const root = await makeTempRoot('wwriting-evt-anchor-queue-');
+  const dir = path.join(root, 'sess-1');
+  const writer = makeStore(dir);
+  await writer.append({ type: 'session_created', session_id: 'sess-1', data: {} });
+  await writer.append({ type: 'input_submitted', session_id: 'sess-1', data: { input_id: 'in-1', text: '在跑的' } });
+  await writer.append({ type: 'run_started', session_id: 'sess-1', run_id: 'run-1', data: { input_id: 'in-1', text: '在跑的' } });
+  await writer.append({ type: 'input_queued', session_id: 'sess-1', data: { input_id: 'in-9', text: '排队的那条' } });
+
+  // 封面停在排队之后：队列带着文本进封面。
+  await fs.writeFile(path.join(dir, 'state.json'), coverJson({
+    last_seq: 4,
+    turns: 1,
+    status: 'active',
+    active_run_id: 'run-1',
+    active_input_id: 'in-1',
+    active_input: { input_id: 'in-1', text: '在跑的' },
+    queue: [{ input_id: 'in-9', text: '排队的那条', queued_at: iso(FIXED_MS + 4000) }],
+  }), 'utf8');
+
+  // 重开（inputs Map 为空——锚点快路不重建它），提升排队输入为新一轮，run_started 不带文本。
+  const reopened = makeStore(dir);
+  const store = reopened;
+  await store.append({ type: 'run_interrupted', session_id: 'sess-1', run_id: 'run-1', data: { reason: 'user_stop' } });
+  await store.append({ type: 'run_started', session_id: 'sess-1', run_id: 'run-2', data: { input_id: 'in-9' } });
+  const projection = await store.currentProjection();
+  assert.equal(projection.active_input_id, 'in-9');
+  assert.equal(projection.active_input.text, '排队的那条', '排队项自带文本兜住跨锚点开轮');
+  assert.equal(projection.queue.length, 0, '排队项随 run_started 离队');
+});
+
+test('锚点 + 残尾并存：repair 照旧截断并补恢复事件，日志 seq 保持连续', async () => {
+  const root = await makeTempRoot('wwriting-evt-anchor-torn-');
+  const dir = path.join(root, 'sess-1');
+  const writer = makeStore(dir);
+  await writer.append({ type: 'session_created', session_id: 'sess-1', data: {} });
+  await writer.append({ type: 'input_submitted', session_id: 'sess-1', data: { input_id: 'in-1', text: '写' } });
+  await writer.append({ type: 'run_started', session_id: 'sess-1', run_id: 'run-1', data: { input_id: 'in-1', text: '写' } });
+  await writer.append({ type: 'run_completed', session_id: 'sess-1', run_id: 'run-1', data: {} });
+  await fs.appendFile(path.join(dir, 'events.jsonl'), '{"seq":5,"type":"torn","da');
+
+  const reopened = makeStore(dir);
+  const repaired = await reopened.repair();
+  assert.equal(repaired.truncatedTail, true);
+
+  const { events } = await reopened.readAll();
+  // 修复后追加 log_tail_truncated（复用被弃尾行的 seq 5），日志 seq 连续。
+  assert.equal(events.length, 5);
+  assert.equal(events[4].type, 'log_tail_truncated');
+  assert.deepEqual(events.map((event) => event.seq), [1, 2, 3, 4, 5]);
+  const projection = await reopened.currentProjection();
+  assert.equal(projection.last_seq, 5);
+});

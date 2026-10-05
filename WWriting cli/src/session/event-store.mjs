@@ -13,6 +13,22 @@ export const EVENT_SCHEMA_VERSION = 1;
 // 专门锤跨块行拼接与多字节字符跨界。
 const TAIL_CHUNK_BYTES = 256 * 1024;
 
+// 锚点校验窗（tryLoadFromAnchor）：只需罩住最后一个写入批次，见 tryLoadFromAnchor 的注释。
+const ANCHOR_WINDOW_BYTES = 1024 * 1024;
+
+// 锚点封面校验：形状齐全才可作投影初值。turns 的在位兼作版本标记（封面化之前的
+// state.json 没有它，一律回退全量，重开一次即被 repair 重写成新形状）。
+function validAnchorProjection(state) {
+  if (state === null || typeof state !== 'object' || Array.isArray(state)) return false;
+  if (typeof state.session_id !== 'string' || state.session_id === '') return false;
+  if (!Number.isInteger(state.last_seq) || state.last_seq < 0) return false;
+  if (!Number.isInteger(state.turns) || state.turns < 0) return false;
+  if (typeof state.status !== 'string' || state.status === '') return false;
+  if (typeof state.updated_at !== 'string' || state.updated_at === '') return false;
+  if (!Array.isArray(state.queue) || !Array.isArray(state.transient_grants)) return false;
+  return true;
+}
+
 // —— 投影折算（纯逻辑）：把事件序列折叠为会话当前状态 ——
 
 const blankProjection = () => ({
@@ -105,9 +121,19 @@ function applyEvent(state, event) {
       const inputId = typeof data.input_id === 'string' ? data.input_id : null;
       if (inputId !== null) {
         const from = queueIndexOf(projection, inputId);
-        if (from !== -1) projection.queue.splice(from, 1);
+        const queuedItem = from !== -1 ? projection.queue.splice(from, 1)[0] : null;
+        const previousActiveText = projection.active_input_id === inputId
+          ? projection.active_input?.text ?? null
+          : null;
         projection.active_input_id = inputId;
-        projection.active_input = { input_id: inputId, text: state.inputs.get(inputId)?.text ?? null };
+        projection.active_input = {
+          input_id: inputId,
+          // 输入文本三级回退（规格 2026-10-06 D6）：排队项自带 → 已是活跃输入的原文 →
+          // inputs Map。跨锚点打开时 Map 是空的（输入全文不进封面），排队跨锚点开的轮由
+          // 队列项兜住。都不命中只剩 null——只影响投影展示字段；历史装配的轮次文本来自
+          // run_started.data.text 事件本体，不经过这里。
+          text: queuedItem?.text ?? previousActiveText ?? state.inputs.get(inputId)?.text ?? null,
+        };
       }
       break;
     }
@@ -380,6 +406,11 @@ export function createEventStore({ sessionDir, clock = Date.now, idFactory = ran
 
   async function loadForWrite() {
     if (cache) return cache;
+    const anchor = await tryLoadFromAnchor();
+    if (anchor !== null) {
+      cache = anchor;
+      return cache;
+    }
     const raw = await readRaw();
     rememberedSessionId = raw.events.length > 0 ? raw.events[0].session_id : rememberedSessionId;
     const fold = newFoldState();
@@ -391,6 +422,46 @@ export function createEventStore({ sessionDir, clock = Date.now, idFactory = ran
       removedBytes: raw.removedBytes,
     };
     return cache;
+  }
+
+  // 锚点快路（规格 2026-10-06 T3/D6）：state.json 是每次 append 都原子重写的投影缓存，
+  // 校验 last_seq 在尾部窗口真实在册后，以它为投影初值、只增量重放其后的增量事件——
+  // 打开大会话不再全量折算。任何一环不成立（封面缺失/损坏/形状不对/last_seq 不在窗内）
+  // 都整体回退全量折算：锚点是快路，不是信任的替代品（ADR-0001 纪律不变）。
+  //
+  // 窗口取 1 MiB 的理由：last_seq 对应的事件是最后一次成功 append 的最后一条（state.json
+  // 紧随其后原子重写），只可能落在日志末尾一个批次内；单条事件最大也就思考正文量级，
+  // 1 MiB 绰绰有余。找不到即视为脱节，宁可全量也不赌。
+  async function tryLoadFromAnchor() {
+    let state;
+    try {
+      state = JSON.parse(await readFile(statePath, 'utf8'));
+    } catch {
+      return null; // 缺失 / 损坏：走全量。
+    }
+    if (!validAnchorProjection(state)) return null;
+    let tail;
+    try {
+      tail = await readTail({ maxBytes: ANCHOR_WINDOW_BYTES });
+    } catch {
+      return null; // 尾窗内有坏行等读取异常：走全量。
+    }
+    const anchorEvent = tail.events.find((event) => event.seq === state.last_seq);
+    if (anchorEvent === undefined || anchorEvent.session_id !== state.session_id) return null;
+
+    const projection = state;
+    projection.digest = projection.digest ?? null;
+    const fold = { projection, inputs: new Map() };
+    for (const event of tail.events) {
+      if (event.seq > state.last_seq) applyEvent(fold, event);
+    }
+    rememberedSessionId = state.session_id;
+    tailInfo = {
+      state: tail.truncatedTail ? 'truncated' : 'clean',
+      keepBytes: tail.keepBytes,
+      removedBytes: tail.removedBytes,
+    };
+    return { fold };
   }
 
   // 当前内存投影（写入方视角；首次调用时从日志重建）。
