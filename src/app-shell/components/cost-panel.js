@@ -184,7 +184,7 @@ function buildChapterCost(cost, summary, warning) {
 
   const body = el("div", { className: "cost-section-body" });
   if (entries.length === 0) {
-    body.appendChild(el("div", { className: "dpanel-empty", text: "暂无章节成本记录。" }));
+    body.appendChild(el("div", { className: "dpanel-empty", text: "暂无章节成本记录" }));
   } else {
     for (const [chapterNo, bucket] of entries) {
       const isWarning = warning && String(warning.chapter_no ?? warning.data?.chapter) === chapterNo;

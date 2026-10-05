@@ -4232,7 +4232,7 @@ test("压缩源超窗显示真正逃生指引，不渲染必败重试和无效�
   const row = root.querySelector('[data-testid="agent-compaction-row"]');
   assert.equal(row.textContent, "压缩失败");
   assert.match(root.querySelector('[data-testid="agent-compaction-detail"]')?.textContent ?? "", /清空对话历史后重试/u);
-  assert.match(root.querySelector('[data-testid="agent-compaction-detail"]')?.textContent ?? "", /compaction_source_exceeds_window/u);
+  assert.match(root.querySelector('[data-testid="agent-compaction-detail"]')?.textContent ?? "", /源材料超过上下文窗口/u);
   assert.equal(root.querySelector('[data-testid="agent-compaction-retry"]'), null);
   assert.equal(root.querySelector('[data-testid="agent-compaction-cancel"]'), null);
 });
@@ -5256,7 +5256,7 @@ test("AICSS 搜索：web_search 工具行特化渲染，完成后逐来源勾选
   await tick();
   const query = root.querySelector(".agent-search-query");
   assert.ok(query, "特化查询头应存在");
-  assert.equal(query.textContent, "搜索 “JWT 安全”");
+  assert.equal(query.textContent, "搜索「JWT 安全」");
   assert.ok(query.classList.contains("agent-live-text"), "运行中查询头 shimmer（复用唯一 shimmer 定义）");
   surface.applyEvent(ev("tool_call_completed", {
     tool_call_id: "tc-s1",

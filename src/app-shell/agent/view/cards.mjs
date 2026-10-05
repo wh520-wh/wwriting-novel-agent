@@ -150,7 +150,7 @@ export function createCardsView(ctx) {
       // 主文案 = 用户事实；provider_configuration_error 有固定恢复文案。
       message.textContent = error.code === "provider_configuration_error"
         ? "模型尚未配置，当前任务无法继续。"
-        : String(error.message ?? "操作失败。");
+        : String(error.message ?? "请稍后重试。");
       card.append(title, message);
       const actionsRow = doc.createElement("div");
       actionsRow.className = "agent-error-actions";
@@ -247,7 +247,7 @@ export function createCardsView(ctx) {
           showToast(
             error?.code === "priority_pending"
               ? "已在优先处理中"
-              : `请求失败：${String(error?.message ?? "请求失败")}`
+              : `请求失败：${String(error?.message ?? "").trim() || "请稍后重试"}`
           );
         });
       });

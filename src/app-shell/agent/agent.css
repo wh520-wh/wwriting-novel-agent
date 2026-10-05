@@ -163,7 +163,7 @@
 
 .agent-composer-menu-trigger {
   min-width: 0;
-  height: 30px;
+  height: var(--control-compact);
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -243,7 +243,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 7px;
+  padding: 8px;
   margin-bottom: 2px;
   box-sizing: border-box;
   border: 1px solid var(--agent-line-strong);
@@ -393,8 +393,8 @@
 
 .agent-empty-action {
   min-width: 0;
-  min-height: 98px;
-  padding: 16px 15px;
+  min-height: 96px;
+  padding: 16px 16px;
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr) 16px;
   align-items: start;
@@ -443,7 +443,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
 }
 
 .agent-empty-action-copy strong {
@@ -488,7 +488,7 @@
   padding: 11px 14px;
   border-radius: var(--r-sm);
   font-size: var(--font-base);
-  line-height: 1.68;
+  line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -731,7 +731,7 @@
 
 /* 四件套挂 .btn.btn--sm.btn--ghost 基元（透明底/无边框/无阴影），此处只留尺寸与配色差异 */
 .agent-stop-btn {
-  height: 32px;              /* Round10：固定 32px 紧凑次按钮 */
+  height: var(--control-compact); /* Round10：固定 32px 紧凑次按钮 */
   min-width: 64px;
   padding: 0 10px;
   gap: 5px;
@@ -759,7 +759,7 @@
 
 .agent-retry-btn {
   min-width: 64px;
-  height: 30px;
+  height: var(--control-compact);
   padding: 0 12px;
 }
 
@@ -797,7 +797,7 @@
   list-style: none;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
   max-width: var(--reading-column); /* Round10：阅读轴 token（容器仍全宽） */
   min-height: 32px;
@@ -910,7 +910,7 @@
 .agent-work-items {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
   width: 100%;
   max-width: var(--reading-column); /* Round10：阅读轴 token（容器仍全宽） */
   margin-inline: 0;
@@ -1640,7 +1640,7 @@
   max-width: min(420px, calc(100vw - 32px));
   padding: 9px 16px;
   border: 1px solid var(--agent-line-strong);
-  border-radius: var(--r);
+  border-radius: var(--r-pill);
   background: var(--agent-panel-solid);
   box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
   color: var(--agent-ink);
@@ -1681,7 +1681,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 7px;
+  padding: 8px;
   margin-bottom: 2px;
   border: 1px solid var(--agent-line-strong);
   border-radius: var(--r-lg);
@@ -2017,7 +2017,7 @@
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  height: 30px; /* 与工具栏触发按钮等高 */
+  height: var(--control-compact); /* 与工具栏触发按钮等高 */
   margin-left: 10px; /* R5：与发送键拉开距离（6 → 10） */
   margin-right: 2px;
 }

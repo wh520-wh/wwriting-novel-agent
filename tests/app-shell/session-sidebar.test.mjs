@@ -1110,7 +1110,7 @@ test("dashboard seed 失败：当前项目组降级为失败行，点击重试�
   f.sidebar.markSessionsFailed(P);
   const failed = allDescendants(f.listEl).filter((c) => c.classList.contains("session-retry"));
   assert.equal(failed.length, 1, "当前项目组降级显示失败行");
-  assert.equal(failed[0].textContent.includes("会话加载失败"), true);
+  assert.equal(failed[0].textContent.includes("对话加载失败"), true);
 
   failed[0].dispatch("click", {});
   await flush();
@@ -1186,7 +1186,7 @@ test("懒拉失败降级：reject → 失败行，点击重试 / 再次展开可
   await flush();
   let failed = allDescendants(f.listEl).filter((c) => c.classList.contains("session-retry"));
   assert.equal(failed.length, 1, "懒拉失败显示失败行");
-  assert.equal(failed[0].textContent.includes("会话加载失败"), true);
+  assert.equal(failed[0].textContent.includes("对话加载失败"), true);
 
   // 再次展开可重试：折叠 → 展开 → 重新拉取
   chevronOf(f.listEl.children[2]).dispatch("click", {}); // 折叠

@@ -530,10 +530,10 @@ export async function bootApp(root = document) {
           // 第十二轮 F9：点击时按最新 Run 状态复查（面板存续期间旧求值会过期）。
           // 行为门禁与后端 409 同口径（非终态集），被拦时 toast 提示且不执行。
           if (agentSurface.isAgentRunning()) {
-            showToast("写作进行中，暂停后恢复。");
+            showToast("写作进行中，停止后再恢复。");
             // 抛错而非早退：version-panel 在确认后 restore.disabled = true，
             // 只有 rejection 走 catch 复位按钮 + 面板 notice，早退会让按钮卡死。
-            throw new Error("写作进行中，暂停后恢复。");
+            throw new Error("写作进行中，停止后再恢复。");
           }
           const result = await postJson("/api/chapters/rollback", { chapter_no: chapterNo, version });
           if (result?.ok) {
@@ -616,7 +616,7 @@ export async function bootApp(root = document) {
         projectScope.activate(data.projectRoot);
         token = projectScope.capture(data.projectRoot);
       }
-      if (!data.ok) throw new Error(data.message ?? "仪表盘请求失败");
+      if (!data.ok) throw new Error(data.message ?? "仪表盘加载失败。");
       renderDashboard(data);
       // Task 16：迁移提示 toast——本次响应实际发生快照→引用迁移时提示一次（模块级
       // 一次性标志，页面加载内只弹一次）。
@@ -825,7 +825,7 @@ export async function bootApp(root = document) {
     if (!projectRoot) return;
     if (!force && pathEquals(projectRoot, currentProjectRoot) && sessionId == null) return; // 已选中项目 + 不指定会话：no-op
     railRefs.projectOpenStatus.style.display = "block";
-    railRefs.projectOpenStatus.textContent = "正在打开...";
+    railRefs.projectOpenStatus.textContent = "正在打开…";
     try {
       await postJson("/api/projects/open", { projectRoot });
       commitProjectSwitch(projectRoot, sessionId);
@@ -856,7 +856,7 @@ export async function bootApp(root = document) {
     }
     if (!window.wwritingDesktop?.selectProjectFolder) {
       openCreateModal("", { mode: "preview" });
-      showToast("预览环境请在弹窗中手动输入文件夹路径。", "info");
+      showToast("预览环境请手动输入文件夹路径。", "info");
     }
   }
   
@@ -907,7 +907,7 @@ export async function bootApp(root = document) {
       return;
     }
     setCreateSubmitLoading(true);
-    setCreateStatus("正在初始化项目...", "info");
+    setCreateStatus("正在初始化项目…", "info");
     try {
       const minWords = Number(settingsRefs.createMinWords.value || 3000);
       await postJson("/api/projects/init", {

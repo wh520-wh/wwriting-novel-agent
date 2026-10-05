@@ -205,7 +205,7 @@ export function createSessionSidebar({
         }
       }
     }
-    if (parts.length === 0) parts.push(projEmptyRow(query ? "没有匹配的小说。" : "还没有小说"));
+    if (parts.length === 0) parts.push(projEmptyRow(query ? "没有匹配的小说" : "还没有小说"));
     listEl.replaceChildren(...parts);
   }
 
@@ -333,8 +333,8 @@ export function createSessionSidebar({
     btn.className = "session-retry";
     btn.title = "重新加载对话列表";
     // 可访问名以 aria-label 为准（textContent 同名，双保险）。
-    btn.setAttribute("aria-label", "会话加载失败，点击重试");
-    btn.textContent = "会话加载失败，点击重试";
+    btn.setAttribute("aria-label", "对话加载失败，点击重试");
+    btn.textContent = "对话加载失败，点击重试";
     btn.addEventListener("click", () => retrySessions(root));
     return btn;
   }

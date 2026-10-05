@@ -344,7 +344,7 @@ test("round10 footer: model 分区保存按钮隐藏，状态槽留空（2026-09
   assert.equal(settingsSaveStatus.textContent, "");
 });
 
-test("round10 footer: 保存在途切分区再回来，按钮保持禁用与「保存中...」", async () => {
+test("round10 footer: 保存在途切分区再回来，按钮保持禁用与「保存中…」", async () => {
   const saveButton = new MockElement("button");
   const saveStatus = new MockElement("p");
   let releaseSave;
@@ -363,7 +363,7 @@ test("round10 footer: 保存在途切分区再回来，按钮保持禁用与「�
   await modal.openSettingsModal("writing");
   assert.equal(saveButton.hidden, false, "writing 分区保存按钮可见");
   assert.equal(saveButton.disabled, true, "保存在途切回后按钮仍禁用");
-  assert.equal(saveButton.textContent, "保存中...", "在途文案保留");
+  assert.equal(saveButton.textContent, "保存中…", "在途文案保留");
   // 保存完成 → 恢复可用
   releaseSave({ ok: true });
   await tickAsync();
@@ -1163,7 +1163,7 @@ test("活动 Run 时清空按钮禁用并提示先停止任务", async () => {
   assert.equal(clearBtn.disabled, true, "活动 Run 时清空按钮应禁用");
   const hint = findElementById("clear-history-run-hint");
   assert.equal(hint.hidden, false, "活动 Run 时应显示提示");
-  assert.match(hint.textContent, /先停止任务/u);
+  assert.match(hint.textContent, /停止后再清空对话历史/u);
 });
 
 test("任务空闲时清空按钮可用且无先停止任务提示", async () => {
@@ -1477,7 +1477,7 @@ test("B18：连续两次保存——旧 save 的迟到失败不得恢复按钮/�
   const p1 = modal.saveSettingsForTest(); // save 1：慢（deferred）
   await tickAsync();
   assert.equal(saveButton.disabled, true, "save 1 在途：按钮禁用");
-  assert.equal(saveButton.textContent, "保存中...");
+  assert.equal(saveButton.textContent, "保存中…");
 
   const p2 = modal.saveSettingsForTest(); // save 2：同样慢（deferred）
   await tickAsync();
@@ -1487,7 +1487,7 @@ test("B18：连续两次保存——旧 save 的迟到失败不得恢复按钮/�
   await tickAsync();
   await tickAsync();
   assert.equal(saveButton.disabled, true, "旧 save 的 finally 不得恢复按钮（新 save 仍在途）");
-  assert.equal(saveButton.textContent, "保存中...", "旧 save 的 catch 不得覆盖按钮文案");
+  assert.equal(saveButton.textContent, "保存中…", "旧 save 的 catch 不得覆盖按钮文案");
   assert.deepEqual(toasts, [], "旧 save 的迟到失败不弹 toast");
 
   // save 2 成功：正常显示已保存反馈

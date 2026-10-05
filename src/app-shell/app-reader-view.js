@@ -86,8 +86,8 @@ export function createReaderView({ refs, getChapterNo, getChapters }) {
   // openOverlay 之后按原顺序调 applyFont / updateNav，保持既有 DOM 写序不变）。
   function renderLoading(chapterNo) {
     refs.readerTitle.textContent = `第 ${chapterNo} 章`;
-    refs.readerMeta.textContent = "正在读取本章正文...";
-    refs.readerBody.replaceChildren(emptyNode("读取中..."));
+    refs.readerMeta.textContent = "正在读取本章正文…";
+    refs.readerBody.replaceChildren(emptyNode("读取中…"));
   }
 
   function renderChapter(data, chapterNo) {

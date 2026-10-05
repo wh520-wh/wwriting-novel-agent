@@ -511,7 +511,7 @@ export function createSettingsModal(ctx, options = {}) {
     const runHint = document.createElement("div");
     runHint.className = "spd-hint";
     runHint.id = "clear-history-run-hint";
-    runHint.textContent = "任务进行中，请先停止任务后再清空对话历史。";
+    runHint.textContent = "任务进行中，停止后再清空对话历史。";
     runHint.hidden = true;
     ctx.refs.settingsDetail.append(runHint);
 
@@ -966,7 +966,7 @@ export function createSettingsModal(ctx, options = {}) {
     saveInFlight = true;
     ctx.refs.settingsSave.disabled = true;
     const originalText = ctx.refs.settingsSave.textContent;
-    ctx.refs.settingsSave.textContent = "保存中...";
+    ctx.refs.settingsSave.textContent = "保存中…";
     try {
       await fn();
       // 成功不弹 Toast：先显示「已保存」，短暂停留（700ms）后再关闭弹窗，

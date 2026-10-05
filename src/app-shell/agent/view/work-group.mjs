@@ -79,8 +79,10 @@ const SEARCH_GLOBE_SVG = (() => {
   ).join("");
   return `<svg class="agent-search-globe" viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="0.85" stroke-linecap="round" style="overflow: visible" aria-hidden="true"><circle cx="6" cy="6" r="5.7" opacity="0.9"/><line x1="0.3" y1="6" x2="11.7" y2="6" opacity="0.9"/>${paths}</svg>`;
 })();
-const SEARCH_BULLET_DOTS = `<svg class="agent-search-dots" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke-width="1.8" stroke-dasharray="1.8 3.6" stroke-linecap="round"/></svg>`;
-const SEARCH_BULLET_CHECK = `<svg class="agent-search-check" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>`;
+// bullet 转圈/勾选与 task-icons 单源同形（taskIcon 产出不含 class，agent.css
+// 按 agent-search-* 做定位/过渡，这里注入 class 即可）。
+const SEARCH_BULLET_DOTS = taskIcon("pending", 16).replace("<svg ", '<svg class="agent-search-dots" ');
+const SEARCH_BULLET_CHECK = taskIcon("completed", 16).replace("<svg ", '<svg class="agent-search-check" ');
 
 export function createWorkGroupView(ctx) {
   // 共享引用解构（const 对象，引用共享）：壳与分区读写同一份状态/DOM。
@@ -590,7 +592,7 @@ export function createWorkGroupView(ctx) {
 
   function updateSearchContent(row, item) {
     const query = String(item.args?.query ?? "");
-    const queryText = query.length > 0 ? `搜索 “${query}”` : "搜索中";
+    const queryText = query.length > 0 ? `搜索「${query}」` : "搜索中";
     if (row.searchQuery.textContent !== queryText) row.searchQuery.textContent = queryText;
     // 查询头 shimmer 复用唯一 shimmer 定义（Task 2 的 .agent-live-text），不新增渐变 CSS
     row.searchQuery.classList.toggle("agent-live-text", item.state === "running");

@@ -40,7 +40,7 @@ export function createVersionPanel({ doc = document } = {}) {
       restore.textContent = "恢复此版";
       if (callbacks.agentRunning) {
         restore.disabled = true;
-        restore.textContent = "写作中";
+        restore.textContent = "写作进行中";
       } else {
         restore.addEventListener("click", (event) => {
           event.stopPropagation();
@@ -107,7 +107,7 @@ export function createVersionPanel({ doc = document } = {}) {
     head.className = "version-panel-head";
     head.textContent = `${title} · 历史版本`;
     host.append(head);
-    if (agentRunning) host.append(notice("写作进行中，暂停后恢复。"));
+    if (agentRunning) host.append(notice("写作进行中，停止后再恢复。"));
     try {
       const { versions } = await getVersions();
       if (!isCurrent()) return;

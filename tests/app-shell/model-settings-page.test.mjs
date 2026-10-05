@@ -344,9 +344,9 @@ test("renderDetail 交互接线：改名 / Base URL 校验 / 启停 / 协议回�
   assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { base_url: "https://api.deepseek.com/v2" } });
   assert.equal(baseUrlErrorEl.textContent, "", "合法 Base URL 保存成功后错误应清空");
 
-  // 状态切换：enabled 供应商按钮文案「禁用」，点击保存相反状态
+  // 状态切换：enabled 供应商按钮文案「停用」，点击保存相反状态
   const statusToggle = els.find((el) => el.className === "provider-status-toggle");
-  assert.equal(statusToggle.textContent, "禁用");
+  assert.equal(statusToggle.textContent, "停用");
   statusToggle.click();
   await tickAsync();
   assert.deepEqual(lastPatch(), { url: "/api/settings/providers/deepseek", body: { status: "disabled" } });
@@ -1017,7 +1017,7 @@ test("启停切换失败：toast 提示且不回退旧 UI（#10）", async () =>
   await tickAsync();
   assert.ok(toasts.some((t) => t.kind === "error" && t.message.startsWith("保存失败")), "供应商启停失败应弹 toast");
   assert.ok(toasts.some((t) => t.kind === "error" && t.message.includes("服务器响应异常")), "英文技术错误应映射为中文");
-  assert.equal(statusToggle.textContent, "禁用", "失败后按钮文案保持原状");
+  assert.equal(statusToggle.textContent, "停用", "失败后按钮文案保持原状");
 
   // 模型启停失败：toast + 文案不回退
   const m1Row = els.find((el) => el.className === "model-row" && el.getAttribute?.("data-model-id") === "m1");

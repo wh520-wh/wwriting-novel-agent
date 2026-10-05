@@ -61,7 +61,7 @@ export function createDrawerPanels(ctx) {
   function renderChapterPanel(data) {
     const summary = data.summary;
     const { panel, body } = dpanel("章节目录", `${summary.completedChapters}/${summary.targetChapters}`);
-    body.style.padding = "6px";
+    body.classList.add("dpanel-body--flush");
 
     // 导出工具条：确定性导出直接 POST /api/projects/export-book。
     const toolbar = document.createElement("div");
@@ -208,8 +208,8 @@ export function createDrawerPanels(ctx) {
     const summaryLine = document.createElement("p");
     summaryLine.className = "spd-hint";
     summaryLine.textContent = modelUnconfigured
-      ? "尚未配置模型。点上方按钮选 DeepSeek / MiMo 或自定义供应商，并粘贴 API Key。"
-      : `${profile.display}${profile.endpoint ? ` · ${profile.endpoint}` : ""}；${profile.api_key_saved ? "API Key 已保存在本机。" : "尚未保存 API Key。"}`;
+      ? "尚未配置模型。点上方按钮选 DeepSeek / MiMo 或自定义供应商，并粘贴 API 密钥。"
+      : `${profile.display}${profile.endpoint ? ` · ${profile.endpoint}` : ""}；${profile.api_key_saved ? "API 密钥已保存在本机。" : "尚未保存 API 密钥。"}`;
     // 第十三轮（F6）：高级项参数可见（buildModelProfile 已带同源缺省口径）。
     const fmtK = (tokens) => `${Math.round(Number(tokens) / 1000)}k`;
     const nodes = [summaryLine];
@@ -339,7 +339,7 @@ export function createDrawerPanels(ctx) {
     form.append(researchRow(q, sBtn), researchRow(u, fBtn));
     research.body.append(form);
     if (sources.length === 0) {
-      research.body.append(drawerEmpty("暂无来源快照。"));
+      research.body.append(drawerEmpty("暂无来源快照"));
     } else {
       for (const source of sources) {
         const row = document.createElement("div");

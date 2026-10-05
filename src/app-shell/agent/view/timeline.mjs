@@ -400,7 +400,7 @@ export function createTimelineView(ctx) {
     const sourceTooLarge = entry.state === "failed" && entry.error_code === "compaction_source_exceeds_window";
     record.detail.hidden = !sourceTooLarge;
     record.detail.textContent = sourceTooLarge
-      ? "compaction_source_exceeds_window：源材料超过上下文窗口，请清空对话历史后重试。"
+      ? "源材料超过上下文窗口，请清空对话历史后重试。"
       : "";
     // 按钮只按状态签名重建：失败 → 重试+取消；running → 取消；其余无按钮。
     const buttons = sourceTooLarge ? [] : (COMPACTION_ROW_BUTTONS[entry.state] ?? []);

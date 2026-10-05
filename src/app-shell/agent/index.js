@@ -559,7 +559,7 @@ export function createAgentSurface({
       }
       const realSessionId = created?.session?.session_id ?? created?.session_id ?? null;
       if (!realSessionId) {
-        const error = new Error("创建新会话失败");
+        const error = new Error("创建新对话失败");
         error.code = "session_create_failed";
         throw error;
       }
@@ -582,7 +582,7 @@ export function createAgentSurface({
   }
 
   function createSessionSwitchAbort() {
-    const error = new Error("会话已切换，未发送。");
+    const error = new Error("已切换对话，未发送。");
     error.code = "session_switch_aborted";
     return error;
   }

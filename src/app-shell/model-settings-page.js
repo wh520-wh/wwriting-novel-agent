@@ -769,12 +769,12 @@ function vendorLogoEl(logoKey, name) {
     });
     const nameError = el("span", { class: "spd-field-error", "data-field-error": "name" });
     activeDraftRefs.errorRefs.set("name", nameError);
-    // 状态切换：文案即动作（enabled →「禁用」，disabled →「启用」），
+    // 状态切换：文案即动作（enabled →「停用」，disabled →「启用」），
     // 点击保存相反状态，refresh 重渲染后文案随新状态翻转。
     const statusToggle = el("button", {
       type: "button",
       class: "provider-status-toggle",
-      text: provider.status === "enabled" ? "禁用" : "启用"
+      text: provider.status === "enabled" ? "停用" : "启用"
     });
     statusToggle.addEventListener("click", () => {
       saveProviderPatch(provider.id, {
