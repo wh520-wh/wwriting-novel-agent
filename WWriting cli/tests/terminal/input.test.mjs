@@ -893,3 +893,155 @@ test('权限模式常驻标签：打字重绘后标签仍在——它随框线�
     reader.stop();
   }
 });
+
+// —— 联想菜单（工单 05）：渲染、随键重算、提交抹除 ——
+
+const MENU_ITEMS = [
+  { name: '/model', description: '设置模型与 API Key' },
+  { name: '/mode-x', description: '测试同名前缀' },
+  { name: '/resume', description: '切换会话' },
+  { name: '/stop', description: '停止当前这一轮' },
+];
+
+function makeMenuReader(stdout, { env = { NO_COLOR: '1' } } = {}) {
+  const stdin = makeFakeTTY();
+  const reader = createInputReader({
+    stdin, stdout, env, onSubmit: () => {}, menuCommands: MENU_ITEMS,
+  });
+  return { stdin, reader };
+}
+
+test('联想菜单：行首斜杠出现在框线上方——❯ 高亮第一条、带说明、末行按键提示', async () => {
+  const stdout = makeSink({ tty: true });
+  const { stdin, reader } = makeMenuReader(stdout);
+  reader.start();
+  try {
+    stdin.write('/');
+    await tick();
+    const lines = screenText(stdout.text()).split('\n');
+    const menuTop = lines.findIndex((line) => line.includes('❯ /model'));
+    assert.ok(menuTop !== -1, `菜单应在框线上方：${JSON.stringify(lines)}`);
+    assert.ok(lines[menuTop].includes('设置模型与 API Key'), '说明列在场');
+    assert.ok(lines[menuTop + 1].includes('/mode-x'), '第二条跟在后面');
+    const hintIndex = lines.findIndex((line) => line.includes('↑/↓ 选择 · Tab 补全 · Esc 收起'));
+    assert.equal(hintIndex, menuTop + MENU_ITEMS.length, '提示行是菜单末行');
+    assert.ok(lines[hintIndex + 1].includes('─'), '提示行下面就是上框线');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('联想菜单：行中斜杠与无命中前缀都不出现，屏幕没有菜单残迹', async () => {
+  const stdout = makeSink({ tty: true });
+  const { stdin, reader } = makeMenuReader(stdout);
+  reader.start();
+  try {
+    stdin.write('写/模');
+    await tick();
+    assert.equal(screenText(stdout.text()).includes('↑/↓ 选择'), false, '行中斜杠不开菜单');
+    stdin.write('x\x7f\x7f\x7f\x7f'); // 改成无命中的 /zzx 再缩回
+    await tick();
+    assert.equal(screenText(stdout.text()).includes('↑/↓ 选择'), false, '无命中不开菜单');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('联想菜单：忙碌时与实时区并存——动态行在上、菜单在下、框线在其下', async () => {
+  const stdout = makeSink({ tty: true });
+  const { stdin, reader } = makeMenuReader(stdout);
+  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' }, composer: reader.composer, scheduleTick: noopScheduleTick });
+  reader.start();
+  try {
+    renderer.printStatus('思考中');
+    await tick();
+    stdin.write('/s');
+    await tick();
+    const lines = screenText(stdout.text()).split('\n');
+    const liveIndex = lines.findIndex((line) => line.includes('思考中'));
+    const menuIndex = lines.findIndex((line) => line.includes('❯ /stop'));
+    const ruleIndex = lines.findIndex((line) => line.trim().startsWith('─') && line.includes('─') && menuIndex !== -1 && lines.indexOf(line) > menuIndex);
+    assert.ok(liveIndex !== -1 && menuIndex > liveIndex, `动态行在上、菜单在下：${JSON.stringify(lines)}`);
+    assert.ok(lines[menuIndex + 1].includes('↑/↓ 选择'), '提示行仍在');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('联想菜单：提交后不进历史——菜单行被清成空行，用户行完整留在屏上', async () => {
+  const stdout = makeSink({ tty: true });
+  const { stdin, reader } = makeMenuReader(stdout);
+  reader.start();
+  try {
+    stdin.write('/stop');
+    await tick();
+    assert.ok(screenText(stdout.text()).includes('↑/↓ 选择'), '前置：菜单在场');
+    stdin.write('\r');
+    await tick();
+    const screen = screenText(stdout.text());
+    assert.equal(screen.includes('↑/↓ 选择'), false, '菜单整块从屏幕抹掉（不进 scrollback）');
+    assert.equal(screen.includes('❯ /stop'), true, '提交的用户行完整保留');
+    assert.equal(screen.includes('停止当前这一轮'), false, '菜单的说明列也不残留');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('联想菜单：变矮按旧高擦除——命中从多条缩到一条时无顶部残行', async () => {
+  const stdout = makeSink({ tty: true });
+  const { stdin, reader } = makeMenuReader(stdout);
+  reader.start();
+  try {
+    stdin.write('/mo');
+    await tick();
+    stdin.write('\x7f\x7f'); // 缩回 '/' → 全部 4 条
+    await tick();
+    stdin.write('stop'); // /stop → 1 条，菜单从 5 行（4+提示）缩到 2 行
+    await tick();
+    const lines = screenText(stdout.text()).split('\n');
+    const hintCount = lines.filter((line) => line.includes('↑/↓ 选择 · Tab 补全 · Esc 收起')).length;
+    assert.equal(hintCount, 1, `提示行只该有一帧：${JSON.stringify(lines)}`);
+    const modeXCount = lines.filter((line) => line.includes('/mode-x')).length;
+    assert.equal(modeXCount, 0, `缩窄后旧菜单行不残留：${JSON.stringify(lines)}`);
+  } finally {
+    reader.stop();
+  }
+});
+
+test('联想菜单：行数按终端高度封顶——矮终端上高亮项与提示行必须在场', async () => {
+  const stdout = makeSink({ tty: true });
+  stdout.rows = 8; // 8 行终端：菜单封顶 2 行（8−6）= 1 条 + 提示
+  const { stdin, reader } = makeMenuReader(stdout);
+  reader.start();
+  try {
+    stdin.write('/');
+    await tick();
+    const lines = screenText(stdout.text(), { cols: 80, rows: 8 }).split('\n');
+    const menuLines = lines.filter((line) => line.includes('/') && (line.includes('/model') || line.includes('/mode-x') || line.includes('/resume') || line.includes('/stop')));
+    assert.ok(menuLines.length <= 2, `菜单条目封顶 2 行（矮终端兜底下限 3 行含提示）：${JSON.stringify(lines)}`);
+    assert.ok(lines.some((line) => line.includes('↑/↓ 选择')), '提示行必须在场');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('联想菜单：恢复让位前的命令草稿时按行内容重建（用户故事 9）', async () => {
+  const stdout = makeSink({ tty: true });
+  const stdin = makeFakeTTY();
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' }, onSubmit: () => {}, menuCommands: MENU_ITEMS });
+  reader.start();
+  try {
+    stdin.write('/re');
+    await tick();
+    assert.ok(screenText(stdout.text()).includes('❯ /resume'), '前置：菜单在场');
+    reader.suspend();
+    reader.resume();
+    // suspend 会带走草稿（可打印字符），resume 写回后菜单按行重建
+    await tick();
+    const screen = screenText(stdout.text());
+    assert.ok(screen.includes('❯ /re'), `草稿已写回：${screen}`);
+    assert.ok(screen.includes('↑/↓ 选择'), '菜单按恢复的草稿重建');
+  } finally {
+    reader.stop();
+  }
+});

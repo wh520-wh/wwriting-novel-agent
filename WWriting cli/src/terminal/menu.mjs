@@ -39,3 +39,7 @@ export function cycleIndex(selected, delta, total) {
   const step = Number.isFinite(delta) ? Math.trunc(delta) : 0;
   return (((base + step) % total) + total) % total;
 }
+
+// 菜单底部固定一行的按键提示（选择器 DEFAULT_HINT 家族形态）。计入菜单封顶行数；
+// 菜单态的回车 = 提交原文，与全 app 五处选择器的「回车确认」相反——这行必须说清。
+export const MENU_HINT = '↑/↓ 选择 · Tab 补全 · Esc 收起';

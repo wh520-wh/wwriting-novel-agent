@@ -34,7 +34,8 @@ import readline from 'node:readline';
 import {
   USER_MARK, paintText, resolveColor,
 } from './style.mjs';
-import { displayWidth, resolveColumns, fullWidthRuleLine, fullWidthRuleParts } from './metrics.mjs';
+import { displayWidth, resolveColumns, clipToWidth, fullWidthRuleLine, fullWidthRuleParts } from './metrics.mjs';
+import { MENU_HINT, slashMenu } from './menu.mjs';
 
 // 提示符与用户行标记是同一个字符（renderer 的 USER_MARK），屏幕上「❯ 开头」永远是用户说的。
 // 有颜色时用它上色：提示符是这条对话面上最需要一眼认出的东西。
@@ -140,6 +141,7 @@ export function createInputReader({
   onControl = null,
   prompt = null,
   commands = [],
+  menuCommands = [],
 } = {}) {
   const noticeTarget = stderr ?? stdout;
   // 颜色判据与渲染器共用同一份（NO_COLOR 一律不上色），算一次就够。
@@ -158,6 +160,13 @@ export function createInputReader({
   // 下框线最后一次补画时的输入物理行数（paintBelowPrompt 维护）。快速回显路径靠
   // 「当前行数 ≠ 它」发现框线没跟上折行（真机 ConPTY 走查发现的顶穿残留）。
   let paintedRows = 0;
+  // 联想菜单（工单 04/05）：menuText 是屏幕上那一帧预上色文本（null = 没画/已收），
+  // paintedMenuRows 是**那一帧**的物理行数——擦除按它走（旧高纪律）：菜单变矮时若按
+  // 新高上移，旧菜单的顶部行会残留在块顶之上（缺陷 10 同族）。menuSelected 跨键保持
+  // 高亮位，行变化后由内核钳回合法位。
+  let menuText = null;
+  let paintedMenuRows = 0;
+  let menuSelected = 0;
   // suspend 前带走的半行草稿（缺陷猎捕报告 3）。suspend 会真的关掉 readline：
   // 已键入的半行既不在缓冲也不在历史里，不显式承接就是无声销毁——屏幕上和缓冲里双双消失。
   // 恢复时原样写回（含光标位置）。带控制字符的半行不接（会被 readline 当按键解释，比如
@@ -249,21 +258,25 @@ export function createInputReader({
     };
   }
 
-  // 擦掉整个输入区（含实时行），光标停在输入区原来的第一行——之后要么写 scrollback，要么重画输入区。
+  // 擦掉整个输入区（含实时行与联想菜单），光标停在输入区原来的第一行——之后要么写
+  // scrollback，要么重画输入区。上移 = 实时区物理行数（实测）+ 菜单**在屏**行数（旧高，
+  // 变矮的菜单靠它清掉顶部残行）+ 光标所在的输入物理行号。写死 1 在长行折行后少上移
+  // k−1 格，`\x1b[0J` 会从输入块中间开抹，留下重复的输入行与游离框线（缺陷猎捕报告 5）。
   function eraseArea() {
     if (!areaDrawn || rl === null) return;
-    // 上移 = 实时区物理行数（实测）+ 光标所在的输入物理行号。写死 1 在长行折行后少上移 k−1 格，
-    // `\x1b[0J` 会从输入块中间开抹，留下重复的输入行与游离框线（缺陷猎捕报告 5）。
-    writeOut(`\r\x1b[${liveRows(liveText) + inputLayout().cursorRow}A\x1b[0J`);
+    writeOut(`\r\x1b[${liveRows(liveText) + paintedMenuRows + inputLayout().cursorRow}A\x1b[0J`);
     areaDrawn = false;
   }
 
-  // 在光标当前位置重画输入区：实时行（可选）→ 上框线（可带标签）→ 输入行 → 下框线。
+  // 在光标当前位置重画输入区：实时行（可选）→ 联想菜单（可选）→ 上框线（可带标签）→
+  // 输入行 → 下框线。菜单行数在写出后记账（paintedMenuRows = 现在屏幕上的那一帧）。
   function drawArea(nextLive = liveText) {
     if (rl === null || !interactive) return;
     eraseArea();
     liveText = nextLive;
     if (liveText !== null) writeOut(`${liveText}\n`);
+    if (menuText !== null) writeOut(`${menuText}\n`);
+    paintedMenuRows = menuText === null ? 0 : liveRows(menuText);
     writeOut(`${topRule()}\n`);
     areaDrawn = true; // 先置位：下面的 refreshLine 会触发 paintBelowPrompt
     refreshLine();
@@ -358,7 +371,12 @@ export function createInputReader({
         submitImmediate();
         return;
       }
+      if (key && (key.name === 'return' || key.name === 'enter')) {
+        // 回车接受之前抹菜单：此刻行模型与屏幕几何都还有效（eraseMenuInPlace 的前提）。
+        eraseMenuInPlace();
+      }
       ttyWrite(s, key);
+      refreshMenu();
     };
   }
 
@@ -389,6 +407,7 @@ export function createInputReader({
     if (rl === null || !interactive) return;
     const line = typeof rl.line === 'string' ? rl.line : '';
     if (line.trim() === '') return;
+    eraseMenuInPlace(); // 菜单不进历史；此刻行模型还在，几何有效
     if (Number.isInteger(rl.cursor) && rl.cursor !== line.length) {
       rl.cursor = line.length;
       refreshLine();
@@ -397,6 +416,68 @@ export function createInputReader({
     rl.line = '';
     rl.cursor = 0;
     emitSubmission(line.replace(/\r+$/, ''), { immediate: true });
+  }
+
+  // —— 联想菜单（工单 04 内核之上的一层）：渲染、随键重算、提交时抹除 ——
+
+  // 内核状态 → 预上色的菜单整块文本。行 = [❯/空格][命令名][说明]；说明按剩余宽度截断
+  // （实时区纪律：菜单一行都不许软折行，折行会让擦除几何失效）；末尾固定一行按键提示。
+  // 行数按终端高度封顶，超出的用滑动窗口承载——高亮项必须始终在场。
+  function renderMenu(state) {
+    const width = Math.max(1, resolveColumns(stdout.columns) - 1);
+    const totalRows = Number.isFinite(stdout.rows) && stdout.rows > 0 ? stdout.rows : 24;
+    const maxRows = Math.max(3, totalRows - 6); // 输入框、提示行与屏上余量之外才给菜单
+    const room = Math.max(1, maxRows - 1); // 提示行固定占一行
+    const { matches, index } = state;
+    let start = 0;
+    if (matches.length > room) start = Math.max(0, Math.min(index - (room >> 1), matches.length - room));
+    const rows = [];
+    for (let i = start; i < matches.length && rows.length < room; i += 1) {
+      const selected = i === index;
+      const mark = selected ? `${USER_MARK} ` : '  ';
+      const nameRoom = Math.max(0, width - displayWidth(mark));
+      const name = clipToWidth(String(matches[i].name ?? ''), Math.max(1, nameRoom));
+      const used = displayWidth(mark) + displayWidth(name);
+      const description = typeof matches[i].description === 'string' ? matches[i].description : '';
+      const desc = description !== '' ? clipToWidth(`  ${description}`, Math.max(0, width - used)) : '';
+      const tone = selected ? 'accent' : 'info';
+      rows.push(`${paintText(`${mark}${name}`, tone, useColor)}${desc === '' ? '' : paintText(desc, tone, useColor)}`);
+    }
+    rows.push(paintText(clipToWidth(MENU_HINT, width), 'info', useColor));
+    return rows.join('\n');
+  }
+
+  // 菜单随行内容重算：打字、粘贴、删减全部经过 _ttyWrite，这里是唯一的出口。
+  // 内容没变就不动屏幕；变了整块重画（drawArea 的擦除按 paintedMenuRows 旧高走）。
+  // 非交互 / 没配清单时不启用；让位期间 areaDrawn 为假，只记账不画屏。
+  function refreshMenu() {
+    if (rl === null || !interactive || menuCommands.length === 0) return;
+    const line = typeof rl.line === 'string' ? rl.line : '';
+    const state = slashMenu({ line, commands: menuCommands, selected: menuSelected });
+    menuSelected = state.index;
+    const next = state.open ? renderMenu(state) : null;
+    if (next === menuText) return;
+    menuText = next;
+    if (areaDrawn) drawArea();
+  }
+
+  // 菜单不进历史：回车接受 / Ctrl+S 交出草稿**之前**把菜单行从屏幕上清成空行。
+  // 必须在行模型还有效的时刻调用（两处调用点都在拦截层，几何此刻算得准）。
+  // inline 渲染抹不掉 scrollback 的行，只能清空它们——空行落在实时区与用户行之间。
+  function eraseMenuInPlace() {
+    const rows = paintedMenuRows;
+    menuText = null;
+    menuSelected = 0;
+    paintedMenuRows = 0;
+    if (rows === 0 || !areaDrawn || rl === null) return;
+    const { cursorRow } = inputLayout();
+    // 上移到菜单顶：光标行 → 输入块顶（cursorRow − 1）→ 越过顶框线（1）→ 菜单 rows 行。
+    writeOut(`\r\x1b[${cursorRow + rows}A`);
+    for (let i = 0; i < rows; i += 1) {
+      writeOut(i === rows - 1 ? '\x1b[2K' : '\x1b[2K\n');
+    }
+    // 光标回出发格：菜单底行 → 下移 cursorRow + 1 格（输入块顶 + 原光标所在物理行）→ 原列。
+    writeOut(`\x1b[${cursorRow + 1}B\x1b[${cursorColumn()}G`);
   }
 
   // 给渲染器用的输入区协作钩子。非交互（管道）时 isActive() 为 false，渲染器走顺序直写。
@@ -501,6 +582,8 @@ export function createInputReader({
           rl.cursor = draft.cursor;
           refreshLine();
         }
+        // 恢复的草稿若处于命令位置，菜单按当前行内容重建（用户故事 9：恢复后重建）。
+        refreshMenu();
       }
     } else {
       draftBackup = null; // 非交互接回：这半行没有去处，别让它迟到地出现在下一次 start 里。
@@ -527,6 +610,10 @@ export function createInputReader({
           : line.length,
       }
       : null;
+    // 菜单是纯输入 UI：让位期间它随输入区消失，状态一并清掉——resume 后按恢复的
+    // 草稿重建（start() 里 refreshMenu），绝不带着让位前的旧帧回来。
+    menuText = null;
+    paintedMenuRows = 0;
     rl = null;
     interactive = false;
     liveText = null;

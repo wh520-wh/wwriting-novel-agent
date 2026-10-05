@@ -116,6 +116,8 @@ export async function main(
     stderr: io.stderr,
     env: io.env,
     commands: HELP_COMMANDS.map(([name]) => name),
+    // 联想菜单的数据源（工单 05）：与 /help 同一张表连中文说明一起传，两处文案不分叉。
+    menuCommands: HELP_COMMANDS.map(([name, description]) => ({ name, description })),
     // 不 await：controller.submit() 会等到本轮 + 队列 drain 结束，await 会把输入框堵死（D15）。
     // immediate（Ctrl+S）原样透传：命令草稿与回车完全同路，「立即」只作用于普通正文。
     onSubmit: (text, { immediate = false } = {}) => {
