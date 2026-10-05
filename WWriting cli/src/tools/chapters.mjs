@@ -38,8 +38,12 @@ const MAX_SUMMARY_CHARS = 200;
 
 // 相对路径的防呆（纵深防御：上游 files.readFile 已归一，这里再拦一次）：
 // 绝不允许 '..' 段或空段进版本目录。
+// win32 上 `\` 也是分隔符，必须先归一成 `/` 再切段——否则整串 `..\..\…` 会落进
+// 一个「非 ..」段骗过守卫，版本快照经 path.join 归一化后逃出应用私有区。
+// POSIX 上 `\` 是合法文件名字符，不动它。
 function safeSegments(relPath) {
-  const segments = String(relPath).split('/').filter((segment) => segment !== '' && segment !== '.');
+  const normalized = path.sep === '\\' ? String(relPath).replace(/\\/g, '/') : String(relPath);
+  const segments = normalized.split('/').filter((segment) => segment !== '' && segment !== '.');
   if (segments.length === 0 || segments.some((segment) => segment === '..')) {
     throw new ChapterToolError('章节路径不合法。', 'CHAPTER_PATH_INVALID', { path: relPath });
   }

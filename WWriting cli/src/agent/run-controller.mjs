@@ -21,7 +21,7 @@ import { createFileTools } from '../tools/files.mjs';
 import { createPermissionState } from '../tools/permissions.mjs';
 import { updatePlan } from '../tools/plan.mjs';
 import { ChapterToolError, createChapterService } from '../tools/chapters.mjs';
-import { createMemoryService } from '../tools/memory.mjs';
+import { MemoryToolError, createMemoryService } from '../tools/memory.mjs';
 import { styleStats } from '../tools/style-stats.mjs';
 import { createSkillService } from '../skills/index.mjs';
 
@@ -66,12 +66,14 @@ export function createDefaultToolsFactory(skillService, chapterService = null) {
 
     // 提交：读当前内容（自动）→ 存版本 + 记前情（私有存储，自动）。
     // 文件不存在 / 读不出时 readFile 的中文事实原样抛出，模型能自己调整。
+    // 入账身份用 readFile 返回的**归一化路径**（displayPath）：模型给的 `./第一章.md`、
+    // `sub/../第一章.md` 与裸名字必须落到同一条账本身份上，否则同一章的历史会被分裂。
     tools.commitChapter = async (args) => {
-      const { text } = await files.readFile({ path: args?.path });
+      const source = await files.readFile({ path: args?.path });
       const committed = await chapterService.commit({
         projectRoot: options.projectRoot,
-        path: args?.path,
-        text,
+        path: source.path,
+        text: source.text,
         summary: typeof args?.summary === 'string' ? args.summary : null,
       });
       return { ...committed, memory_checklist: MEMORY_MAINTENANCE_REMINDER };
@@ -79,11 +81,11 @@ export function createDefaultToolsFactory(skillService, chapterService = null) {
     // 修订入账：读当前内容（自动）→ 存版本 + 记 revision（私有存储，自动）。
     // 文件不存在 / 读不出时 readFile 的中文事实原样抛出，模型能自己调整。
     tools.finalizeRevision = async (args) => {
-      const { text } = await files.readFile({ path: args?.path });
+      const source = await files.readFile({ path: args?.path });
       const finalized = await chapterService.finalizeRevision({
         projectRoot: options.projectRoot,
-        path: args?.path,
-        text,
+        path: source.path,
+        text: source.text,
         summary: typeof args?.summary === 'string' ? args.summary : null,
       });
       return { ...finalized, memory_checklist: MEMORY_MAINTENANCE_REMINDER };
@@ -92,17 +94,18 @@ export function createDefaultToolsFactory(skillService, chapterService = null) {
     // （创作目录写入，write 级确认，确认卡说的是「回滚章节」而不是「写入文件」）。
     // 顺序是刻意的：确认发生在写入前一个字节都不会动；确认拒绝只多一份私有快照，前情不受污染。
     tools.rollbackChapter = async (args) => {
+      const source = await files.readFile({ path: args?.path });
       const target = await chapterService.prepareRollback({
         projectRoot: options.projectRoot,
-        path: args?.path,
-        currentText: (await files.readFile({ path: args?.path })).text,
+        path: source.path,
+        currentText: source.text,
       });
       if (target === null) {
         throw new ChapterToolError('这一章还没有提交过，没有可回滚的版本。', 'CHAPTER_NO_VERSION', {
-          path: args?.path ?? null,
+          path: source.path,
         });
       }
-      const restored = await files.restoreFile({ path: args?.path, content: target.text });
+      const restored = await files.restoreFile({ path: source.path, content: target.text });
       return { path: restored.path, restoredSeq: target.seq, charsNoSpace: restored.charsNoSpace, memory_checklist: MEMORY_MAINTENANCE_REMINDER };
     };
     tools.readContinuity = (args) => chapterService.readContinuity({
@@ -110,14 +113,36 @@ export function createDefaultToolsFactory(skillService, chapterService = null) {
       budgetChars: args?.budgetChars,
     });
     // 更新设定：设定档案的唯一合法写通道（memory/ 对通用文件工具只读）。
-    // 校验、合并、原子落盘都在服务里；这里只做参数转发。写级确认——确认卡说「更新设定」。
-    tools.updateMemory = (args) => memoryService.update({
-      projectRoot: options.projectRoot,
-      path: args?.path,
-      facts: Array.isArray(args?.facts) ? args.facts : [],
-      timeline: Array.isArray(args?.timeline) ? args.timeline : [],
-      characters: Array.isArray(args?.characters) ? args.characters : [],
-    });
+    // 校验、合并、原子落盘都在服务里；这里只做参数转发。写级确认在这里落门（铁律 4）——
+    // 确认卡说「更新设定」；桥没注入时 fail-closed（与 files 的纪律同一句：谁忘了调就未确认直接落盘，
+    // 正是要堵的洞），未获授权就一个字节都不写。
+    tools.updateMemory = async (args) => {
+      const target = typeof args?.path === 'string' ? args.path : null;
+      if (!options.permissions || typeof options.permissions.request !== 'function') {
+        throw new MemoryToolError('未获得写入授权，请先确认。', 'MEMORY_UPDATE_UNAUTHORIZED', {
+          tool: 'update_memory',
+        });
+      }
+      const decision = await options.permissions.request({
+        tool: 'update_memory',
+        target,
+        projectRoot: options.projectRoot,
+      });
+      if (!decision || decision.allowed !== true) {
+        throw new MemoryToolError('这次更新未获授权，设定档案保持原样。', 'MEMORY_UPDATE_DENIED', {
+          tool: 'update_memory',
+          target,
+          reason: decision ? decision.reason : null,
+        });
+      }
+      return memoryService.update({
+        projectRoot: options.projectRoot,
+        path: args?.path,
+        facts: Array.isArray(args?.facts) ? args.facts : [],
+        timeline: Array.isArray(args?.timeline) ? args.timeline : [],
+        characters: Array.isArray(args?.characters) ? args.characters : [],
+      });
+    };
     tools.styleStats = async (args) => {
       const { text } = await files.readFile({ path: args?.path });
       return styleStats({ text });
@@ -685,8 +710,11 @@ export function createRunController({
   // 「[会话摘要] + 未覆盖轮次」开工（见 loadHistory）。
   //
   // 三条边界（比实现重要）：
-  //   ① 只在**空闲**时可压缩：忙碌时抛错——压缩读的是「当时的事实」，
-  //      与在跑的轮并发会产生「摘要缺了正在说的这一轮」的假账。
+  //   ① 只在**空闲**时可压缩：忙碌时抛错——压缩读的是「当时的事实」。
+  //      through_seq 取**入口快照**（readAll 的最后一条 seq），不是摘要返回后的 last_seq：
+  //      摘要往返的窗口里若起跑了新轮（输入框按 D15 保持可用），它的 seq 必然 > through_seq，
+  //      于是保持「未覆盖」——照常进上下文、进下一次压缩，绝不出现「摘要缺了正在说的这一轮」
+  //      还被盖进覆盖范围的假账。
   //   ② 压缩看的是**全部**未覆盖轮次（含超出预算会被丢的那些）：预算在这里不设限，
   //      这正是压缩存在的意义——丢掉的轮子在丢之前被收进摘要。
   //   ③ 只做**手动**压缩：自动压缩牵扯安全点与触发时机，CLI 先不背这份复杂度
@@ -708,7 +736,9 @@ export function createRunController({
       digest: digest === null ? null : buildDigestMessage(digest.text),
     }).messages;
     const text = await runCompaction({ modelClient, messages: transcript });
-    const throughSeq = handle.projection.last_seq;
+    // 入口快照：uncovered 与摘要正文都来自这份 events，through_seq 必须与它们同一时刻，
+    // 而不是摘要返回后的 last_seq——后者会把摘要窗口里起跑的轮次错误地盖进「已覆盖」。
+    const throughSeq = events.length > 0 ? events.at(-1).seq : 0;
     await serializeWrite(() => handle.append({
       type: 'digest_compacted',
       data: { digest: text, through_seq: throughSeq, chars: text.length, covered_turns: uncovered.length },

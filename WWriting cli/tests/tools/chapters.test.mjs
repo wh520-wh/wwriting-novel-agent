@@ -191,6 +191,22 @@ test('畸形输入各自有一条中文事实，不抛裸错误', async () => {
   });
 });
 
+// 反斜杠 `..` 链是 win32 专属逃逸形（缺陷猎捕 2026-10-05 第 3 条）：整串 `..\..\…` 在旧的
+// 「按 / 切段」守卫下是一个「非 ..」段，版本快照会经 path.join 归一化逃出应用私有区。
+// POSIX 上 `\` 是合法文件名字符、不构成分隔，所以这条只在 win32 上有断言意义。
+const win32Only = process.platform === 'win32' ? test : test.skip;
+
+win32Only('win32：反斜杠承载的 .. 链过不了守卫，版本快照落不到私有区之外', async () => {
+  const { service, projectRoot } = await makeService('wwriting-ch-backslash-');
+  const escape = `${'..\\'.repeat(12)}novel\\逃逸.md`;
+  await assert.rejects(() => service.commit({ projectRoot, path: escape, text: '内容' }), (error) => {
+    assert.equal(error.code, 'CHAPTER_PATH_INVALID');
+    return true;
+  });
+  // 逃逸路径没有在册版本，回滚准备按契约返回 null（不写快照、不建目录）。
+  assert.equal(await service.prepareRollback({ projectRoot, path: escape, currentText: '内容' }), null);
+});
+
 test('生效版本文件被外部改动后，回滚准备拒绝返回被改内容', async () => {
   const { service, projectRoot } = await makeService('wwriting-ch-tamper-');
   await service.commit({ projectRoot, path: 'chapters/01.md', text: '原来的章节' });

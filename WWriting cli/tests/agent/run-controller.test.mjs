@@ -1410,6 +1410,168 @@ test('章节提交、修订入账与回滚：版本落在应用私有区，回�
   }
 });
 
+// —— update_memory 的写级确认（缺陷猎捕 2026-10-05 第 4 条）——
+// WRITE_TOOLS 与设计规格都声明 update_memory 是「写级确认」，但原实现是纯转发、
+// 全链路没有任何 permissions.request：默认模式下模型可以不弹卡直接改设定档案。
+
+test('update_memory：写级确认卡先到，「一次允许」后才落盘', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-memorygate-');
+  const projectRoot = path.join(root, 'novel');
+  await fs.mkdir(projectRoot, { recursive: true });
+  await fs.writeFile(path.join(projectRoot, '第一章.md'), '正文。', 'utf8');
+  const script = [
+    {
+      tool: {
+        name: 'update_memory',
+        args: { path: '第一章.md', facts: [{ entity: '林晚', attribute: '身份', value: '钟表匠', quote: '她低头修表。' }] },
+      },
+    },
+    { text: '记好了。' },
+  ];
+  let round = 0;
+  const modelClient = {
+    async streamChat({ onDelta, onToolCall }) {
+      const step = script[round];
+      round += 1;
+      if (step.tool) onToolCall({ id: `c${round}`, name: step.tool.name, arguments: JSON.stringify(step.tool.args) });
+      else onDelta(step.text);
+      return { text: step.tool ? '' : step.text, toolCalls: step.tool ? [{}] : [], usage: null };
+    },
+  };
+  const permissions = createPermissionState({ clock: makeClock(), idFactory: makeIdFactory('dec') });
+  const { controller } = await makeRealLoopController({ root, projectRoot, modelClient, permissions });
+
+  try {
+    const submitting = controller.submit({ text: '更新设定' });
+    await waitFor(() => permissions.pending().length > 0, { label: 'update_memory 确认卡' });
+    const pending = permissions.pending()[0];
+    assert.equal(pending.tool, 'update_memory');
+    assert.equal(pending.level, 'write');
+    assert.deepEqual(pending.choices, ['once', 'input', 'deny']);
+    await controller.decide({ decisionId: pending.decision_id, choice: 'once' });
+    const submitted = await submitting;
+    assert.equal(submitted.result.status, 'completed');
+
+    // 允许之后设定才落盘（<创作目录>/memory/continuity.json）。
+    const continuity = JSON.parse(await fs.readFile(path.join(projectRoot, 'memory', 'continuity.json'), 'utf8'));
+    assert.ok(
+      continuity.facts.some((fact) => fact.entity === '林晚' && fact.value === '钟表匠'),
+      '允许后设定条目确实落盘',
+    );
+    // 确认卡与答复都在日志里，事后可回看。
+    const events = await controllerEvents(controller);
+    const card = events.find((event) => event.type === 'decision_pending');
+    assert.equal(card.data.tool, 'update_memory');
+    const resolved = events.find((event) => event.type === 'decision_resolved');
+    assert.equal(resolved.data.allowed, true);
+  } finally {
+    await controller.close();
+  }
+});
+
+test('update_memory：拒绝后设定档案一个字节都不动，本轮照常收敛', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-memorygate-deny-');
+  const projectRoot = path.join(root, 'novel');
+  await fs.mkdir(projectRoot, { recursive: true });
+  await fs.writeFile(path.join(projectRoot, '第一章.md'), '正文。', 'utf8');
+  const script = [
+    {
+      tool: {
+        name: 'update_memory',
+        args: { path: '第一章.md', facts: [{ entity: '林晚', attribute: '身份', value: '钟表匠' }] },
+      },
+    },
+    { text: '好的，不记了。' },
+  ];
+  let round = 0;
+  const modelClient = {
+    async streamChat({ onDelta, onToolCall }) {
+      const step = script[round];
+      round += 1;
+      if (step.tool) onToolCall({ id: `c${round}`, name: step.tool.name, arguments: JSON.stringify(step.tool.args) });
+      else onDelta(step.text);
+      return { text: step.tool ? '' : step.text, toolCalls: step.tool ? [{}] : [], usage: null };
+    },
+  };
+  const permissions = createPermissionState({ clock: makeClock(), idFactory: makeIdFactory('dec') });
+  const { controller } = await makeRealLoopController({ root, projectRoot, modelClient, permissions });
+
+  try {
+    const submitting = controller.submit({ text: '更新设定' });
+    await waitFor(() => permissions.pending().length > 0, { label: 'update_memory 确认卡' });
+    await controller.decide({ decisionId: permissions.pending()[0].decision_id, choice: 'deny' });
+    const submitted = await submitting;
+    assert.equal(submitted.result.status, 'completed', '拒绝只拒这次更新，不毁掉整轮');
+    const memoryExists = await fs.stat(path.join(projectRoot, 'memory')).then(() => true, () => false);
+    assert.equal(memoryExists, false, '拒绝后不落盘，memory/ 目录都不该出现');
+  } finally {
+    await controller.close();
+  }
+});
+
+test('update_memory：没有权限桥时 fail-closed，拒绝执行也不建 memory/', async () => {
+  const projectRoot = await makeTempRoot('wwriting-ctrl-memorygate-nc-');
+  await fs.mkdir(projectRoot, { recursive: true });
+  await fs.writeFile(path.join(projectRoot, '第一章.md'), '正文。', 'utf8');
+  const skillService = { read: async () => ({}) };
+  const tools = createDefaultToolsFactory(skillService, createChapterService({ appDataRoot: projectRoot, clock: makeClock() }))({
+    projectRoot,
+    signal: null,
+    permissions: null,
+  });
+
+  await assert.rejects(
+    tools.updateMemory({ path: '第一章.md', facts: [{ entity: '林晚', attribute: '身份', value: '钟表匠' }] }),
+    (error) => error.code === 'MEMORY_UPDATE_UNAUTHORIZED',
+  );
+  const memoryExists = await fs.stat(path.join(projectRoot, 'memory')).then(() => true, () => false);
+  assert.equal(memoryExists, false, '未授权就不写，连目录都不建');
+});
+
+// 章节入账身份的回归（缺陷猎捕 2026-10-05 第 3 条修复面）：模型给的 `./第一章.md` 与
+// `第一章.md` 必须是同一条账本身份，否则同一章的历史会被拼写分裂。
+test('章节入账身份用归一化路径：./第一章.md 与 第一章.md 是同一章', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-chapter-norm-');
+  const projectRoot = path.join(root, 'novel');
+  await fs.mkdir(projectRoot, { recursive: true });
+  await fs.writeFile(path.join(projectRoot, '第一章.md'), '初稿内容。', 'utf8');
+  const script = [
+    { tool: { name: 'commit_chapter', args: { path: './第一章.md' } } },
+    { text: '提交好了。' },
+    { tool: { name: 'finalize_revision', args: { path: '第一章.md' } } },
+    { text: '入账好了。' },
+  ];
+  let round = 0;
+  const modelClient = {
+    async streamChat({ onDelta, onToolCall }) {
+      const step = script[round];
+      round += 1;
+      if (step.tool) onToolCall({ id: `c${round}`, name: step.tool.name, arguments: JSON.stringify(step.tool.args) });
+      else onDelta(step.text);
+      return { text: step.tool ? '' : step.text, toolCalls: step.tool ? [{}] : [], usage: null };
+    },
+  };
+  const { controller } = await makeRealLoopController({
+    root,
+    projectRoot,
+    modelClient,
+    extra: { chapterService: createChapterService({ appDataRoot: root, clock: makeClock() }) },
+  });
+
+  try {
+    const first = await controller.submit({ text: '提交这一章' });
+    assert.equal(first.result.status, 'completed');
+    const second = await controller.submit({ text: '入账修订' });
+    assert.equal(second.result.status, 'completed', '同一章的两种拼写不得报 CHAPTER_NOT_COMMITTED');
+    // 版本目录按归一化名字落盘，没有 `./` 前缀的分裂目录。
+    const versionDirs = await fs.readdir(path.join(root, 'WWriting', 'workspaces'));
+    const versionsRoot = path.join(root, 'WWriting', 'workspaces', versionDirs[0], 'chapters', 'versions');
+    assert.deepEqual(await fs.readdir(versionsRoot), ['第一章.md']);
+  } finally {
+    await controller.close();
+  }
+});
+
 // —— 会话压缩（/compact）——
 
 test('compact：摘要落事件；之后的轮以「[会话摘要] + 未覆盖轮次」开工', async () => {
@@ -1476,6 +1638,50 @@ test('compact：空闲检查与空会话如实回答', async () => {
   }
   // 未打开会话（close 之后）压缩要给出中文事实，不是裸 TypeError。
   await assert.rejects(() => controller.compact(), /打开会话/);
+});
+
+// 压缩窗口与提交并发的回归（缺陷猎捕 2026-10-05 第 2 条）：through_seq 必须是入口快照，
+// 否则摘要往返期间起跑的新轮会被盖进「已覆盖」，从模型上下文里静默消失且永不自愈。
+test('compact：摘要窗口内提交的新轮不被 through_seq 吞掉，保持未覆盖进上下文', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-compact-race-');
+  const projectRoot = path.join(root, 'novel');
+  await fs.mkdir(projectRoot, { recursive: true });
+  const COMPACTION_SYSTEM_PROMPT = (await import('../../src/agent/compact.mjs')).COMPACTION_SYSTEM_PROMPT;
+  const normalRequests = [];
+  const modelClient = {
+    async streamChat({ messages, onDelta }) {
+      if (messages[0]?.content === COMPACTION_SYSTEM_PROMPT) {
+        // 摘要往返的窗口里，用户敲下一条消息（输入框按 D15 保持可用），并等它跑完。
+        await controller.submit({ text: '压缩窗口里的消息' });
+        onDelta('摘要正文。');
+        return { text: '摘要正文。', toolCalls: [], usage: null };
+      }
+      normalRequests.push(structuredClone(messages));
+      onDelta('好的。');
+      return { text: '好的。', toolCalls: [], usage: null };
+    },
+  };
+  const { controller } = await makeRealLoopController({ root, projectRoot, modelClient });
+
+  try {
+    await controller.submit({ text: '第一轮' });
+    await controller.compact();
+
+    const events = await controllerEvents(controller);
+    const digest = events.find((event) => event.type === 'digest_compacted');
+    const runs = events.filter((event) => event.type === 'run_started');
+    assert.equal(runs.length, 2, '压缩窗口内的新轮确实起跑了');
+    assert.ok(digest.data.through_seq < runs[1].seq, 'through_seq 是入口快照，不得盖住窗口内起跑的轮');
+    assert.equal(digest.data.covered_turns, 1, '被摘要的只有入口前那一轮');
+
+    // 下一轮的上下文：交错轮的原文还在（未被摘要吞掉），被摘要覆盖的轮次照旧不进上下文。
+    await controller.submit({ text: '我刚才说了什么？' });
+    const flat = normalRequests.at(-1).map((message) => message.content).join('\n');
+    assert.match(flat, /压缩窗口里的消息/, '摘要窗口内的轮次必须留在上下文里');
+    assert.equal(flat.includes('第一轮'), false, '被摘要覆盖的轮次原文不再进上下文');
+  } finally {
+    await controller.close();
+  }
 });
 
 // —— /retry：Run 级重试 ——

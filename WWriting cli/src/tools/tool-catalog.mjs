@@ -183,7 +183,7 @@ const TOOLS = Object.freeze({
   update_memory: {
     label: '更新设定',
     method: 'updateMemory',
-    description: '更新设定档案（memory/ 下的结构化事实、时间线与角色状态）：系统校验、合并、落盘并重渲染打印件，重复提交安全。提交、入账或回滚章节后用它维护本章设定，只交本章新增或修正的条目。',
+    description: '更新设定档案（memory/ 下的结构化事实、时间线与角色状态）：需要用户确认；系统校验、合并、落盘并重渲染打印件，重复提交安全。提交、入账或回滚章节后用它维护本章设定，只交本章新增或修正的条目。',
     parameters: {
       type: 'object',
       properties: {

@@ -225,6 +225,19 @@ export function createCommandHandler({
       .catch((error) => reply('提交失败', { tone: 'error', detail: fact(error) }));
   }
 
+  // 运行中不开「独占按键」的交互界面（/model 向导、/resume 挑选器）：让位持有计数只管
+  // 常驻 readline，管不住向导自建的临时 readline 与此时到达的权限确认卡选择器——
+  // 两个 keypress 读取者会吃同一颗键，向导里敲的数字 1 就成了确认卡上的「一次允许」。
+  // 与 runModeCycle 的忙碌口径同款（controller.isBusy），只是拦的是打开界面这一步。
+  function refuseWhenBusy(detail) {
+    const controller = getController();
+    if (controller !== null && controller.isBusy()) {
+      reply('运行中', { tone: 'warn', detail });
+      return true;
+    }
+    return false;
+  }
+
   // —— /model：一条命令，三种走法 ——
   async function runModelCommand(args) {
     const intent = modelIntent(args);
@@ -232,6 +245,7 @@ export function createCommandHandler({
     if (intent.kind === 'dialog') {
       // 无参 = 打开交互式设置向导（重新选模型 / 补 Key、换 Key），由组合根注入。
       // 没有交互能力时（单元测试、非交互、管道）退回「打印当前配置」——这条路一直是可用的兜底。
+      if (refuseWhenBusy('模型设置等这一轮结束后再打开。')) return;
       if (typeof openModelDialog === 'function') {
         await openModelDialog({ focus: null });
         return;
@@ -243,6 +257,7 @@ export function createCommandHandler({
     if (intent.kind === 'key') {
       // `/model key` 后面没给值：直接把人送进问 Key 的那一步，而不是让他再背一条用法。
       if (intent.value === '') {
+        if (refuseWhenBusy('模型设置等这一轮结束后再打开。')) return;
         if (typeof openModelDialog === 'function') {
           await openModelDialog({ focus: 'key' });
           return;
@@ -583,6 +598,7 @@ export function createCommandHandler({
     // 挑选器要独占按键，而常驻 readline 会跟着一起吃键，所以让位由**注入方**负责
     // （cli.mjs 里用 input.suspend() → 挑选 → input.resume()，与 /model 向导同一套路）。
     if (target === '') {
+      if (refuseWhenBusy('会话挑选等这一轮结束后再打开。')) return;
       if (chooseSession === null) {
         reply('/resume <会话ID>', { tone: 'warn', detail: '当前终端不支持交互式挑选。' });
         return;

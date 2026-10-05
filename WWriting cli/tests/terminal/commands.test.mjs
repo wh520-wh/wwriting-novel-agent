@@ -530,7 +530,7 @@ test('/resume 缺参数或切换失败都给一条可理解的事实', async () 
 test('/resume 无参且有选择器时打开挑选，选中即切换', async () => {
   const resumed = [];
   const handler = createCommandHandler({
-    getController: () => ({ submit: async () => ({ status: 'completed' }), snapshot: () => ({ session_id: 'old' }) }),
+    getController: () => ({ submit: async () => ({ status: 'completed' }), snapshot: () => ({ session_id: 'old' }), isBusy: () => false }),
     renderer: makeRenderer(),
     resumeSession: async (id) => { resumed.push(id); },
     pickSession: async () => 'sess_2',
@@ -542,7 +542,7 @@ test('/resume 无参且有选择器时打开挑选，选中即切换', async () 
 test('挑选被取消（Esc）时不切换，也不报错', async () => {
   const resumed = [];
   const handler = createCommandHandler({
-    getController: () => ({ submit: async () => ({ status: 'completed' }), snapshot: () => ({ session_id: 'old' }) }),
+    getController: () => ({ submit: async () => ({ status: 'completed' }), snapshot: () => ({ session_id: 'old' }), isBusy: () => false }),
     renderer: makeRenderer(),
     resumeSession: async (id) => { resumed.push(id); },
     pickSession: async () => null,
@@ -558,7 +558,7 @@ test('挑选器自己抛（如 suspend 失败）时收敛成「切换失败」�
   const resumed = [];
   const renderer = makeRenderer();
   const handler = createCommandHandler({
-    getController: () => ({ submit: async () => ({ status: 'completed' }), snapshot: () => ({ session_id: 'old' }) }),
+    getController: () => ({ submit: async () => ({ status: 'completed' }), snapshot: () => ({ session_id: 'old' }), isBusy: () => false }),
     renderer,
     resumeSession: async (id) => { resumed.push(id); },
     pickSession: async () => { throw new Error('终端已关闭'); },
@@ -573,7 +573,7 @@ test('挑选器自己抛（如 suspend 失败）时收敛成「切换失败」�
 test('没有选择器（非交互 / 管道）时退回用法提示，不静默', async () => {
   const statuses = [];
   const handler = createCommandHandler({
-    getController: () => ({ submit: async () => ({ status: 'completed' }) }),
+    getController: () => ({ submit: async () => ({ status: 'completed' }), isBusy: () => false }),
     renderer: { ...makeRenderer(), printStatus: (text, options) => statuses.push([text, options]) },
     resumeSession: async () => {},
   });
@@ -585,7 +585,7 @@ test('/resume <会话ID> 仍然直接切换，不打开挑选', async () => {
   const picked = [];
   const resumed = [];
   const handler = createCommandHandler({
-    getController: () => ({ submit: async () => ({ status: 'completed' }), snapshot: () => ({ session_id: 'old' }) }),
+    getController: () => ({ submit: async () => ({ status: 'completed' }), snapshot: () => ({ session_id: 'old' }), isBusy: () => false }),
     renderer: makeRenderer(),
     resumeSession: async (id) => { resumed.push(id); },
     pickSession: async () => { picked.push(true); return null; },
@@ -913,6 +913,55 @@ test('Shift+Tab 运行中不可切：回复「运行中」，不弹卡、不改�
   assert.deepEqual(mode.state.sets, []);
 });
 
+// 运行中不开独占按键的交互界面（缺陷猎捕 2026-10-05 第 1 条）：向导 / 挑选器活着时
+// 到达的权限确认卡会嵌进让位，两个 keypress 读取者吃同一颗键——向导里敲的数字 1
+// 就是确认卡上的「一次允许」。忙碌时必须拒绝打开，与 Shift+Tab 同一口径。
+test('/model 运行中：不开设置面，回复「运行中」', async () => {
+  const renderer = makeRenderer();
+  const { controller } = makeController();
+  controller.isBusy = () => true;
+  const dialogs = [];
+  const handler = makeHandler({
+    controller,
+    renderer,
+    model: { dialog: async (options) => { dialogs.push(options); } },
+  });
+
+  await handler.handle('/model');
+  await handler.handle('/model key');
+
+  assert.deepEqual(dialogs, [], '忙碌时不得打开向导');
+  const statuses = pick(renderer.calls, 'status');
+  assert.equal(statuses[0][1], '运行中');
+  assert.equal(statuses[0][2].tone, 'warn');
+  assert.ok(statuses[0][2].detail.includes('模型设置'));
+  assert.equal(statuses[1][1], '运行中', '/model key（无值）同样要开向导，同样被拦');
+  // 「打印当前配置」的兜底也不该走：那是给非交互路径的，不是给运行中的。
+  assert.equal(statuses.some((call) => typeof call[1] === 'string' && call[1].includes('deepseek-chat')), false);
+});
+
+test('/resume 运行中：不开会话挑选器，回复「运行中」', async () => {
+  const renderer = makeRenderer();
+  const { controller } = makeController();
+  controller.isBusy = () => true;
+  const picks = [];
+  const resumed = [];
+  const handler = makeHandler({
+    controller,
+    renderer,
+    pickSession: async () => { picks.push(true); return 'sess_2'; },
+    resumeSession: async (id) => { resumed.push(id); },
+  });
+
+  await handler.handle('/resume');
+
+  assert.deepEqual(picks, [], '忙碌时不得打开挑选器');
+  assert.deepEqual(resumed, []);
+  const status = pick(renderer.calls, 'status').at(-1);
+  assert.equal(status[1], '运行中');
+  assert.ok(status[2].detail.includes('会话挑选'));
+});
+
 test('Shift+Tab YOLO 切回普通：即时收权，不需要确认卡', async () => {
   const { controller } = makeController();
   const renderer = makeRenderer();
@@ -1162,7 +1211,7 @@ test('/help 的命令表里有 /effort', async () => {
 test('/model 无交互能力时的配置回显里带一行思考强度（P15）', async () => {
   const renderer = makeRenderer();
   const handler = createCommandHandler({
-    getController: () => ({ submit: async () => ({ status: 'completed' }) }),
+    getController: () => ({ submit: async () => ({ status: 'completed' }), isBusy: () => false }),
     renderer,
     effort: fakeEffort({ initial: 'max' }),
     model: {
@@ -1183,7 +1232,7 @@ test('切模型后原档位不合法 → 重置为自动并如实说一句（P16
   const renderer = makeRenderer();
   let synced = { reset: true, level: null, reason: 'glm-5.3 不支持 none，思考强度已回到自动。' };
   const handler = createCommandHandler({
-    getController: () => ({ submit: async () => ({ status: 'completed' }) }),
+    getController: () => ({ submit: async () => ({ status: 'completed' }), isBusy: () => false }),
     renderer,
     effort: { ...fakeEffort(), syncWithModel: async () => synced },
     model: { configPath: '/tmp/c.json', load: async () => ({ configured: true, model: 'glm-5.3', baseUrl: 'https://g/v1', apiKey: 'sk-x', apiKeySource: 'file' }), mask: () => '****', listModels: async () => ['glm-5.3'], save: async () => {} },
@@ -1200,7 +1249,7 @@ function reasoningRig(reasoning, { supported = true } = {}) {
   const printed = [];
   const renderer = makeRenderer();
   const handler = createCommandHandler({
-    getController: () => ({ submit: async () => ({ status: 'completed' }) }),
+    getController: () => ({ submit: async () => ({ status: 'completed' }), isBusy: () => false }),
     // makeRenderer() 没有 printReasoning，用展开补上（审查核过这一点）。
     renderer: { ...renderer, printReasoning: (text) => printed.push(text) },
     getReasoning: () => reasoning,
@@ -1280,7 +1329,7 @@ test('空数组与 null 走同一条路径', async () => {
 test('没有注入 getReasoning 时同样给 empty 态，不抛', async () => {
   const renderer = makeRenderer();
   const handler = createCommandHandler({
-    getController: () => ({ submit: async () => ({ status: 'completed' }) }),
+    getController: () => ({ submit: async () => ({ status: 'completed' }), isBusy: () => false }),
     renderer,
   });
   await handler.handle('/reasoning');
@@ -1311,7 +1360,7 @@ test('/help 的命令表里有 /reasoning', async () => {
 test('/model 无交互回显：模型名那格是 API Key 时只给脱敏串（Key 不上屏）', async () => {
   const renderer = makeRenderer();
   const handler = createCommandHandler({
-    getController: () => ({ submit: async () => ({ status: 'completed' }) }),
+    getController: () => ({ submit: async () => ({ status: 'completed' }), isBusy: () => false }),
     renderer,
     model: {
       configPath: '/tmp/c.json',
