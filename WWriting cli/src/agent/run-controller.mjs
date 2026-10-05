@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 
 import { createAgentLoop } from './agent-loop.mjs';
 import {
-  DEFAULT_HISTORY_BUDGET_CHARS, buildDigestMessage, buildHistoryMessages, latestDigest, projectTurns,
+  DEFAULT_HISTORY_BUDGET_CHARS, buildDigestMessage, buildHistoryMessages, estimateChars, estimateTurnsChars, latestDigest, projectTurns,
 } from './history.mjs';
 import { runCompaction } from './compact.mjs';
 import {
@@ -267,7 +267,15 @@ export function createRunController({
   //
   // 读的是**原始** session.eventStore，不是 serializedEventStore(...) 那个包装：包装是为了把
   // 写入串到一条尾链上（避免抢同一个 state.json.tmp），读不走尾链——用包装版反而会排在
-  // 「正在跑的轮」的写之后互相等待。readAll 是纯只读，与写入并发是安全的。
+  // 「正在跑的轮」的写之后互相等待。读路径纯只读，与写入并发是安全的。
+  //
+  // 有界读（规格 2026-10-06 D4）：每轮只回读日志尾部到「预算装满」为止，不再全量读日志——
+  // 预算装满后更早的轮次必被 buildHistoryMessages 丢弃，不读它们不改变结果。两道保底：
+  //   · 摘要真相来自投影（fold 见过每一条 digest_compacted）——「有没有摘要」不需要任何扫描；
+  //     有摘要时回读 untilSeq = through_seq，未覆盖轮次天然全在窗内。
+  //   · 窗口扩到上限仍装不满预算（极端畸形分布）→ 退全量 readAll，计数全精确。
+  // 等价性契约：窗口到达边界（fileStart / seqBoundary）时 messages 与全量读逐字节一致；
+  // 被字节上限截断时 messages 仍一致（预算装满了），只有 truncatedTurns 降级为「N+」口径。
   //
   // 失败一律降级为无历史并返回一条中文事实（日志损坏、I/O 错误）：失忆好过开不了工。
   // 回放历史这件事不值得让整轮失败——这与 history.mjs 忽略孤立事件是同一个判断。
@@ -277,16 +285,50 @@ export function createRunController({
   // 「记忆多少」的口径仍然是这一个数，不因压缩出现第二个预算。
   async function loadHistory(currentInputId) {
     try {
-      const { events } = await session.eventStore.readAll();
+      const coverDigest = (await session.eventStore.currentProjection()).digest ?? null;
+      const digestCost = coverDigest === null ? 0 : estimateChars([buildDigestMessage(coverDigest.text)]);
+      const room = Math.max(0, historyBudget - digestCost);
+      const window = await readHistoryWindow({
+        charsTarget: room,
+        untilSeq: coverDigest === null ? 0 : coverDigest.through_seq,
+        currentInputId,
+      });
+
+      let events;
+      let digest;
+      let coveredTurns;
+      let coveredExact = true;
+      let truncatedExact = true;
+      if (window === null) {
+        // 保底：全量读（旧行为），三个计数全精确。
+        const all = await session.eventStore.readAll();
+        events = all.events;
+        digest = latestDigest(events);
+        coveredTurns = null; // 由 withoutCurrent − prior 的差补算（下方）。
+      } else {
+        events = window.events;
+        digest = coverDigest === null ? null : {
+          text: coverDigest.text,
+          throughSeq: coverDigest.through_seq,
+          coveredTotal: coverDigest.covered_total,
+        };
+        // 摘要覆盖数来自压缩时刻的 covered_total（= 当时全部轮次）。旧摘要事件没有该字段 →
+        // 不带数字（诚实计数）。无摘要时会话根本没有「被覆盖的轮」，覆盖数 0 即精确。
+        // 当前输入若恰好是被摘要覆盖的旧轮（压缩后 /retry 重跑），这里会多计 1——
+        // 展示口径的已知名义差，不影响 messages。
+        coveredTurns = digest === null ? 0 : (digest.coveredTotal ?? 0);
+        coveredExact = digest === null || digest.coveredTotal !== null;
+        truncatedExact = window.exact;
+      }
+
       const turns = projectTurns(events);
-      const digest = latestDigest(events);
       // 排除当前轮：run_started 在循环内部才追加，正常读不到本轮；但「立即」重跑同一条输入时
       // 日志里可能已有它自己的上一轮（或崩溃残留），那会把「这一轮说过的话」当成上下文喂回去。
       const withoutCurrent = turns.filter((turn) => !(typeof currentInputId === 'string' && turn.inputId === currentInputId));
       const prior = digest === null
         ? withoutCurrent
         : withoutCurrent.filter((turn) => Number.isFinite(turn.startSeq) && turn.startSeq > digest.throughSeq);
-      const coveredTurns = withoutCurrent.length - prior.length;
+      if (coveredTurns === null) coveredTurns = withoutCurrent.length - prior.length;
       const built = buildHistoryMessages(prior, {
         budgetChars: historyBudget,
         digest: digest === null ? null : buildDigestMessage(digest.text),
@@ -296,14 +338,38 @@ export function createRunController({
         historyMeta: {
           keptTurns: built.keptTurns,
           truncatedTurns: built.truncatedTurns,
+          truncatedExact,
           chars: built.usedChars,
           digestChars: digest === null ? 0 : digest.text.length,
           coveredTurns,
+          coveredExact,
         },
         notice: null,
       };
     } catch (error) {
       return { history: [], historyMeta: null, notice: '历史未能载入 · 从本轮上下文开始' };
+    }
+  }
+
+  // 有界读窗（规格 2026-10-06 D4）：从 512 KiB 起步，预算装不满且未到边界就扩窗重读；
+  // 到上限仍装不满 → 返回 null，调用方退全量。返回 { events, exact }：
+  // exact = 窗口到达边界（fileStart / seqBoundary），此时窗口内事实即全量事实。
+  const HISTORY_WINDOW_START_BYTES = 512 * 1024;
+  const HISTORY_WINDOW_MAX_BYTES = 8 * 1024 * 1024;
+  async function readHistoryWindow({ charsTarget, untilSeq, currentInputId }) {
+    let maxBytes = HISTORY_WINDOW_START_BYTES;
+    for (;;) {
+      const tail = await session.eventStore.readTail({ maxBytes, untilSeq });
+      const turns = projectTurns(tail.events);
+      const relevant = untilSeq > 0
+        ? turns.filter((turn) => Number.isFinite(turn.startSeq) && turn.startSeq > untilSeq)
+        : turns;
+      const withoutCurrent = relevant.filter((turn) => !(typeof currentInputId === 'string' && turn.inputId === currentInputId));
+      const chars = estimateTurnsChars(withoutCurrent);
+      const exact = tail.stop !== 'byteLimit';
+      if (exact || chars >= charsTarget) return { events: tail.events, exact };
+      if (maxBytes >= HISTORY_WINDOW_MAX_BYTES) return null;
+      maxBytes = Math.min(maxBytes * 4, HISTORY_WINDOW_MAX_BYTES);
     }
   }
 
@@ -706,6 +772,13 @@ export function createRunController({
     return events;
   }
 
+  // 有界版：只回读日志尾部（/retry 判定只需要最后一轮，规格 2026-10-06 D5）。
+  // 与 readEvents 同一条只读纪律：不取锁、不写盘、不走写入尾链。
+  async function readTailEvents({ maxBytes } = {}) {
+    const handle = requireOpen('读取会话事件尾部');
+    return handle.eventStore.readTail({ maxBytes });
+  }
+
   // 会话压缩（/compact）：把已往对话收敛成一份摘要事件，之后的每轮以
   // 「[会话摘要] + 未覆盖轮次」开工（见 loadHistory）。
   //
@@ -741,10 +814,15 @@ export function createRunController({
     const throughSeq = events.length > 0 ? events.at(-1).seq : 0;
     await serializeWrite(() => handle.append({
       type: 'digest_compacted',
-      data: { digest: text, through_seq: throughSeq, chars: text.length, covered_turns: uncovered.length },
+      // covered_total = 摘要生效时被覆盖的轮次总数（= 当时全部轮次，through_seq 之前的一切）。
+      // loadHistory 的有界读据此出「摘要覆盖 N 轮」，无需回读更早的摘要事件求和（规格 D4）。
+      data: {
+        digest: text, through_seq: throughSeq, chars: text.length,
+        covered_turns: uncovered.length, covered_total: turns.length,
+      },
     }));
     return { status: 'ok', chars: text.length, turns: uncovered.length };
   }
 
-  return { open, submit, submitNow, retry, stop, requestPriority, decide, snapshot, isBusy, activeRunId, readEvents, compact, close, permissions: perm };
+  return { open, submit, submitNow, retry, stop, requestPriority, decide, snapshot, isBusy, activeRunId, readEvents, readTailEvents, compact, close, permissions: perm };
 }

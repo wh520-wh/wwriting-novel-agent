@@ -1579,6 +1579,11 @@ function makeRetryController({
         if (readEventsThrows !== null) throw readEventsThrows;
         return events;
       },
+      readTailEvents: async () => {
+        if (readEventsThrows !== null) throw readEventsThrows;
+        // stop: 'fileStart' 表示窗口即全量；窗口截到轮中途的回退路径由「空日志」用例覆盖。
+        return { events, stop: 'fileStart', truncatedTail: false, keepBytes: 0, removedBytes: 0 };
+      },
       retry: async (retryable) => {
         calls.retry.push(retryable);
         if (retryThrows !== null) throw retryThrows;

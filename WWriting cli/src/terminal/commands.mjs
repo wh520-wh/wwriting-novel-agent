@@ -681,10 +681,16 @@ export function createCommandHandler({
     }
     let retryable = null;
     try {
-      retryable = findRetryableTurn(await controller.readEvents());
+      // 有界读（规格 2026-10-06 D5）：判定只看最近一轮——窗口内见到 run_started 即是
+      // 完整的最后一轮（日志按 seq 追加，窗口是后缀，见到任何 run_started 必含最新的那个）。
+      // 窗口截到轮中途才回退全量读；读不出 ≠ 没有：读日志失败必须如实说读失败，
+      // 绝不冒充「没有可重试的失败轮次。」（铁律 3 同源：检测失败不代表检测通过，也不代表检测结果为否）。
+      const tail = await controller.readTailEvents({ maxBytes: 256 * 1024 });
+      const lastTurnComplete = tail.events.some((event) => event.type === 'run_started');
+      retryable = lastTurnComplete
+        ? findRetryableTurn(tail.events)
+        : findRetryableTurn(await controller.readEvents());
     } catch (error) {
-      // 读不出 ≠ 没有：读日志失败必须如实说读失败，绝不冒充「没有可重试的失败轮次。」
-      //（铁律 3 同源：检测失败不代表检测通过，也不代表检测结果为否）。
       reply('无法重试', { tone: 'error', detail: fact(error) });
       return;
     }

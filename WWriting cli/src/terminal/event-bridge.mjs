@@ -118,6 +118,10 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
         const dropped = Number.isFinite(data.truncated_turns) ? data.truncated_turns : 0;
         const covered = Number.isFinite(data.covered_turns) ? data.covered_turns : 0;
         const digestChars = Number.isFinite(data.digest_chars) ? data.digest_chars : 0;
+        // 诚实计数（规格 2026-10-06 D4）：有界读窗口被字节上限截断时，省略数只知下界 →
+        // 「N+ 轮」；旧摘要事件没有 covered_total → 覆盖数不可知 → 只说覆盖了、不报数。
+        const droppedExact = data.truncated_exact !== false;
+        const coveredExact = data.covered_exact !== false;
         if (dropped > 0 || digestChars > 0) {
           // final: true —— 这是落进 scrollback 的一条事实，不是会被重绘抹掉的动态行。
           // 动态行只属于「此刻正在发生的事」，而「这一轮记得多少」是已经确定的结果。
@@ -126,8 +130,8 @@ export function createEventRenderer({ renderer, label = activityLabel, onDecisio
             tone: 'info',
             detail: joinNotes([
               kept > 0 ? `${kept} 轮` : null,
-              covered > 0 ? `摘要覆盖 ${covered} 轮` : null,
-              dropped > 0 ? `省略更早 ${dropped} 轮` : null,
+              covered > 0 ? `摘要覆盖 ${covered} 轮` : (digestChars > 0 && !coveredExact ? '摘要覆盖更早前情' : null),
+              dropped > 0 ? (droppedExact ? `省略更早 ${dropped} 轮` : `省略更早 ${dropped}+ 轮`) : null,
               digestChars > 0 ? `含会话摘要` : null,
             ]),
           });

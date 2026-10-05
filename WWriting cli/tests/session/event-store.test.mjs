@@ -419,3 +419,77 @@ test('turns 计数：每个 run_started 一轮，随 state.json 落盘（规格 
   const rebuilt = await reopened.rebuildProjection();
   assert.equal(rebuilt.projection.turns, 2);
 });
+
+// —— readTail：有界回读（规格 2026-10-06 D3）——
+// tailChunkBytes 注入小值（16 字节），专门锤跨块行拼接与多字节字符跨界。
+
+test('readTail：fileStart 全窗与 readAll 逐字节一致（16 字节块、中文混排跨块）', async () => {
+  const root = await makeTempRoot('wwriting-evt-tail-full-');
+  const dir = path.join(root, 'sess');
+  const store = createEventStore({ sessionDir: dir, clock: makeClock(), idFactory: makeIdFactory(), tailChunkBytes: 16 });
+  await store.append({ type: 'session_created', session_id: 'sess', data: { title: '长夜灯下第一章的手稿正文' } });
+  for (let i = 2; i <= 8; i += 1) {
+    await store.append({ type: 'note', session_id: 'sess', data: { n: i, text: `第${i}条——中文与标点：「引号」、破折号——以及 emoji 🙂 混排` } });
+  }
+  const all = await store.readAll();
+  const full = await store.readTail({ maxBytes: 1024 * 1024 });
+  assert.equal(full.stop, 'fileStart');
+  assert.equal(full.truncatedTail, false);
+  assert.deepEqual(full.events, all.events);
+});
+
+test('readTail：untilSeq 越界即停，低 seq 事件滤除', async () => {
+  const root = await makeTempRoot('wwriting-evt-tail-until-');
+  const dir = path.join(root, 'sess');
+  const store = createEventStore({ sessionDir: dir, clock: makeClock(), idFactory: makeIdFactory(), tailChunkBytes: 16 });
+  await store.append({ type: 'session_created', session_id: 'sess', data: {} });
+  for (let i = 2; i <= 8; i += 1) {
+    await store.append({ type: 'note', session_id: 'sess', data: { n: i, text: `第${i}条——中文与标点：「引号」混排` } });
+  }
+  const bounded = await store.readTail({ maxBytes: 1024 * 1024, untilSeq: 5 });
+  assert.equal(bounded.stop, 'seqBoundary');
+  assert.deepEqual(bounded.events.map((event) => event.seq), [6, 7, 8]);
+});
+
+test('readTail：byteLimit 窗口只装得下尾部几行，且是 readAll 的后缀', async () => {
+  const root = await makeTempRoot('wwriting-evt-tail-limit-');
+  const dir = path.join(root, 'sess');
+  const store = createEventStore({ sessionDir: dir, clock: makeClock(), idFactory: makeIdFactory(), tailChunkBytes: 16 });
+  await store.append({ type: 'session_created', session_id: 'sess', data: {} });
+  for (let i = 2; i <= 8; i += 1) {
+    await store.append({ type: 'note', session_id: 'sess', data: { n: i, text: `第${i}条——中文与标点：「引号」混排` } });
+  }
+  const all = (await store.readAll()).events;
+  const tiny = await store.readTail({ maxBytes: 300 });
+  assert.equal(tiny.stop, 'byteLimit');
+  assert.ok(tiny.events.length >= 1 && tiny.events.length < all.length, `events=${tiny.events.length}`);
+  assert.deepEqual(tiny.events, all.slice(-tiny.events.length), '窗口内容是全量的后缀');
+  // 窗口小到装不下一行时如实返回空。
+  const none = await store.readTail({ maxBytes: 8 });
+  assert.deepEqual(none.events, []);
+  assert.equal(none.stop, 'byteLimit');
+});
+
+test('readTail：残行跨多块时 removedBytes 精确、完整行一个不少', async () => {
+  const root = await makeTempRoot('wwriting-evt-tail-torn-');
+  const dir = path.join(root, 'sess');
+  const store = createEventStore({ sessionDir: dir, clock: makeClock(), idFactory: makeIdFactory(), tailChunkBytes: 16 });
+  await store.append({ type: 'session_created', session_id: 'sess', data: {} });
+  for (let i = 2; i <= 8; i += 1) {
+    await store.append({ type: 'note', session_id: 'sess', data: { n: i, text: `第${i}条——中文与标点：「引号」混排` } });
+  }
+  const eventsPath = path.join(dir, 'events.jsonl');
+  const tornTail = '{"seq":9,"type":"torn","da';
+  await fs.appendFile(eventsPath, tornTail);
+
+  const torn = await store.readTail({ maxBytes: 1024 * 1024 });
+  assert.equal(torn.truncatedTail, true, '残行如实上报');
+  assert.deepEqual(torn.events.map((event) => event.seq), [1, 2, 3, 4, 5, 6, 7, 8], '完整行一个不少');
+  assert.equal(torn.removedBytes, Buffer.byteLength(tornTail), '残行跨多块也要数准');
+  const fileBytes = Buffer.byteLength(await fs.readFile(eventsPath, 'utf8'));
+  assert.equal(torn.keepBytes, fileBytes - Buffer.byteLength(tornTail));
+
+  // 与全量读对偶：readRaw 对同一份残文件给出同样的截断判定。
+  const raw = await store.readAll();
+  assert.equal(raw.truncatedTail, true);
+});

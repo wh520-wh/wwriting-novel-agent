@@ -213,6 +213,10 @@ export function createAgentLoop({
         // 会话压缩的两个补充事实：摘要多少字、多少轮被摘要覆盖（屏幕的「已载入前情」要说）。
         digest_chars: Number.isFinite(meta.digestChars) ? meta.digestChars : 0,
         covered_turns: Number.isFinite(meta.coveredTurns) ? meta.coveredTurns : 0,
+        // 诚实计数（规格 2026-10-06 D4）：有界读被字节上限截断时，「省略更早 N 轮」只能给
+        // 下界（N+）；旧摘要事件没有 covered_total 时覆盖数同样不可知。缺省为精确。
+        truncated_exact: meta.truncatedExact !== false,
+        covered_exact: meta.coveredExact !== false,
       };
     }
     return {
@@ -221,6 +225,8 @@ export function createAgentLoop({
       chars: estimateChars(history),
       digest_chars: 0,
       covered_turns: 0,
+      truncated_exact: true,
+      covered_exact: true,
     };
   }
 

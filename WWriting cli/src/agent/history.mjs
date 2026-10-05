@@ -168,6 +168,16 @@ function turnMessages(turn) {
   return messages;
 }
 
+// 轮次集合的可见字符合计——与 buildHistoryMessages 的预算同一把尺（turnMessages + estimateChars）。
+// 有界读的停止判据用它：窗口内完整轮的字符合计装满预算后，更早的轮次必被预算丢弃，
+// 不读它们不改变装配结果（规格 2026-10-06 D4）。
+export function estimateTurnsChars(turns) {
+  if (!Array.isArray(turns)) return 0;
+  let total = 0;
+  for (const turn of turns) total += estimateChars(turnMessages(turn));
+  return total;
+}
+
 // 逐条消息的字面长度。工具摘要已经在文本里，直接量字符串就够——
 // 不引 tokenizer，也就不会与模型自报的 token 数（run_completed.usage）混为一谈。
 export function estimateChars(messages) {
@@ -282,7 +292,13 @@ export function latestDigest(events) {
     if (event === null || typeof event !== 'object' || event.type !== 'digest_compacted') continue;
     const data = event.data ?? {};
     if (typeof data.digest === 'string' && data.digest !== '') {
-      digest = { text: data.digest, throughSeq: Number.isInteger(data.through_seq) ? data.through_seq : 0 };
+      digest = {
+        text: data.digest,
+        throughSeq: Number.isInteger(data.through_seq) ? data.through_seq : 0,
+        // 压缩时刻已被摘要覆盖的轮次总数（= 当时全部轮次）。旧事件没有该字段 → null，
+        // 消费方据此把「摘要覆盖 N 轮」降级为不带数字的说法（诚实计数，规格 2026-10-06 D4）。
+        coveredTotal: Number.isInteger(data.covered_total) && data.covered_total >= 0 ? data.covered_total : null,
+      };
     }
   }
   return digest;

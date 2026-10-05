@@ -692,6 +692,8 @@ test('注入 2 轮历史：顺序为 [system, h1, h2, 当前输入]，history_ap
     chars: 22, // 四条 content 的字面长度之和：4+7+4+7
     digest_chars: 0,
     covered_turns: 0,
+    truncated_exact: true,
+    covered_exact: true,
   });
 });
 
@@ -713,6 +715,7 @@ test('history_applied 用调用方传入的 historyMeta：截断数如实透传'
   assert.deepEqual(applied.data, {
     kept_turns: 1, truncated_turns: 7, chars: 8,
     digest_chars: 0, covered_turns: 0,
+    truncated_exact: true, covered_exact: true,
   });
 });
 
@@ -736,6 +739,7 @@ test('history 整段被截没（messages 空但 truncatedTurns > 0）仍要发 h
   assert.deepEqual(applied.data, {
     kept_turns: 0, truncated_turns: 5, chars: 0,
     digest_chars: 0, covered_turns: 0,
+    truncated_exact: true, covered_exact: true,
   });
   // 模型仍然以零上下文开工（截断是既定语义，这里只修「如实呈现」）。
   assert.deepEqual(model.calls[0].messages.map((message) => message.role), ['system', 'user']);

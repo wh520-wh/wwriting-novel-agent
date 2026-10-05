@@ -699,3 +699,33 @@ test('排队行与未收尾的动态行共存：dispatcher 不互相覆盖', () 
 
   renderer.close();
 });
+
+test('history_applied 的诚实计数：窗口截断给「N+」，旧摘要只说覆盖不报数（规格 2026-10-06 D4）', () => {
+  const stdout = makeStdout({ tty: false });
+  const renderer = createRenderer({ stdout, env: { NO_COLOR: '1' } });
+  const bridge = createEventRenderer({ renderer });
+
+  // 有界读被字节上限截断：省略数只知下界 → 「N+ 轮」，不冒充精确值。
+  feed(bridge, 'run_started', { input_id: 'i-1', text: '写第一章' });
+  feed(bridge, 'history_applied', { kept_turns: 6, truncated_turns: 4, truncated_exact: false, chars: 24000 });
+  let screen = screenText(stdout.text(), { cols: 100, rows: 40 });
+  assert.ok(screen.includes('省略更早 4+ 轮'), '截断窗口只知下界，说「N+」');
+
+  // 旧摘要事件没有 covered_total：只说覆盖了，不编数字。
+  feed(bridge, 'run_started', { input_id: 'i-2', text: '写第二章' });
+  feed(bridge, 'history_applied', {
+    kept_turns: 1, truncated_turns: 0, chars: 300,
+    digest_chars: 500, covered_turns: 0, covered_exact: false,
+  });
+  screen = screenText(stdout.text(), { cols: 100, rows: 40 });
+  assert.ok(screen.includes('摘要覆盖更早前情'), '不冒充精确覆盖数');
+  assert.ok(!screen.includes('摘要覆盖 0 轮'));
+
+  // 缺省（旧事件无新字段）视为精确——旧行为逐字不变。
+  feed(bridge, 'run_started', { input_id: 'i-3', text: '写第三章' });
+  feed(bridge, 'history_applied', { kept_turns: 2, truncated_turns: 3, chars: 24000 });
+  screen = screenText(stdout.text(), { cols: 100, rows: 40 });
+  assert.ok(screen.includes('省略更早 3 轮'));
+
+  renderer.close();
+});

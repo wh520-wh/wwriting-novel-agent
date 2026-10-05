@@ -9,6 +9,10 @@ import path from 'node:path';
 
 export const EVENT_SCHEMA_VERSION = 1;
 
+// 有界读（readTail）的字节块步长。测试可经 createEventStore 的 tailChunkBytes 注入小值，
+// 专门锤跨块行拼接与多字节字符跨界。
+const TAIL_CHUNK_BYTES = 256 * 1024;
+
 // —— 投影折算（纯逻辑）：把事件序列折叠为会话当前状态 ——
 
 const blankProjection = () => ({
@@ -30,6 +34,12 @@ const blankProjection = () => ({
   // 对齐上游统一行为规格书 §4.2 生命周期口径 A「新 Run 的 run_started 清空上一轮计划」；
   // Run 结束不清——scrollback 与 /plan 都要能回看）。
   plan: null,
+  // 当前生效的会话摘要（/compact 的产物，规格 2026-10-06 回填）。fold 见过每一条
+  // digest_compacted，摘要「有没有、是什么、覆盖到哪」因此是 O(1) 的投影事实——
+  // loadHistory 据此定向回读（untilSeq = through_seq），绝不需要为找摘要扫描日志。
+  // covered_total = 摘要生效时被覆盖的轮次总数；旧事件没有该字段 → null（消费方降级为
+  // 不带数字的说法）。文本只进投影与 state.json，绝不伪装成对话轮次（铁律同 /compact）。
+  digest: null,
 });
 
 function newFoldState() {
@@ -117,6 +127,19 @@ function applyEvent(state, event) {
       // 运行期临时授权：只存在于此轮，Run 终态时整体清空。
       projection.transient_grants.push(data.grant !== undefined ? data.grant : data);
       break;
+    case 'digest_compacted': {
+      // 只认有效摘要（与 history.latestDigest 同判据）；畸形数据不更新，只推进 seq。
+      if (typeof data.digest === 'string' && data.digest !== '') {
+        projection.digest = {
+          text: data.digest,
+          through_seq: Number.isInteger(data.through_seq) ? data.through_seq : 0,
+          covered_total: Number.isInteger(data.covered_total) && data.covered_total >= 0
+            ? data.covered_total
+            : null,
+        };
+      }
+      break;
+    }
     case 'session_recovered':
       projection.status = 'interrupted';
       break;
@@ -137,7 +160,7 @@ export function foldEvents(events) {
 
 // —— 事件存储 ——
 
-export function createEventStore({ sessionDir, clock = Date.now, idFactory = randomUUID } = {}) {
+export function createEventStore({ sessionDir, clock = Date.now, idFactory = randomUUID, tailChunkBytes = TAIL_CHUNK_BYTES } = {}) {
   if (typeof sessionDir !== 'string' || sessionDir.trim() === '') {
     throw new Error('事件存储需要有效的会话目录。');
   }
@@ -210,6 +233,135 @@ export function createEventStore({ sessionDir, clock = Date.now, idFactory = ran
   async function readAll() {
     const { events, truncatedTail } = await readRaw();
     return { events, truncatedTail };
+  }
+
+  // —— 有界读（规格 2026-10-06 D3）：从 EOF 按字节块向前回读，只取预算内的尾部事实 ——
+  //
+  // 全量读（readRaw）的仪式——seq 全程连续校验——属于「重建真相」；有界读只服务三个
+  // 消费方：loadHistory 读到预算装满、/retry 读最后一轮、打开锚点校验尾窗（T3）。
+  // 停止三态：fileStart（到达文件起点，结果即全量）/ seqBoundary（已收集到 seq ≤ untilSeq
+  // 的事件，返回前滤除）/ byteLimit（字节上限——窗口最老一端可能截在轮中途，消费方据此
+  // 扩窗、退全量、或按「N+」口径计数）。seq 全程连续校验不在此做；逐行仍走 parseLine，
+  // 坏行照抛不静默。
+  //
+  // 跨块拼接的簿记（0x0a 字节切安全：换行字节不出现在 UTF-8 多字节序列里，readRaw 同款注释）：
+  // 后读的块处于更低的字节区。一个跨块行的**尾段**在晚读的块里（首段到首个换行为止），
+  // **头段**在早读的块里（末个换行之后到块尾）——carry 就是这条待拼的尾段，随回读逐块向文件
+  // 前方传递。到文件起点仍未闭合的 carry 即最后一行的头，拼接收尾。
+  async function readTail({ maxBytes = TAIL_CHUNK_BYTES, untilSeq = 0 } = {}) {
+    if (!Number.isInteger(maxBytes) || maxBytes <= 0) throw new Error('readTail 需要正整数 maxBytes。');
+    if (!Number.isInteger(untilSeq) || untilSeq < 0) throw new Error('readTail 需要非负整数 untilSeq。');
+
+    let handle;
+    try {
+      handle = await open(eventsPath, 'r');
+    } catch (error) {
+      if (error && error.code === 'ENOENT') {
+        return { events: [], truncatedTail: false, stop: 'fileStart', keepBytes: 0, removedBytes: 0 };
+      }
+      throw new Error(`无法读取事件日志：${eventsPath}`, { cause: error });
+    }
+
+    try {
+      const { size } = await handle.stat();
+      if (size === 0) {
+        return { events: [], truncatedTail: false, stop: 'fileStart', keepBytes: 0, removedBytes: 0 };
+      }
+
+      const emptyBuffer = Buffer.alloc(0);
+      const found = []; // 每块一组的完整行（组内字节升序；组间按回读次序 = 文件降序）。
+      let carry = null;
+      let partialMode = false; // 残行仍向上延伸中（残行可跨多块，见下）。
+      let truncatedTail = false;
+      let removedBytes = 0;
+      let readBytes = 0;
+      let stop = null;
+      let pos = size;
+      let firstChunk = true;
+
+      while (pos > 0 && stop === null) {
+        const budgetLeft = maxBytes - readBytes;
+        if (budgetLeft <= 0) { stop = 'byteLimit'; break; }
+        const chunkSize = Math.min(tailChunkBytes, pos, budgetLeft);
+        const chunk = Buffer.alloc(chunkSize);
+        const { bytesRead } = await handle.read(chunk, 0, chunkSize, pos - chunkSize);
+        if (bytesRead === 0) { stop = 'fileStart'; break; } // 防御：文件在读取途中变小。
+        pos -= bytesRead;
+        readBytes += bytesRead;
+        const atFileStart = pos === 0;
+
+        const parts = [];
+        let lineStart = 0;
+        for (let i = 0; i < bytesRead; i += 1) {
+          if (chunk[i] === 0x0a) { parts.push(chunk.subarray(lineStart, i)); lineStart = i + 1; }
+        }
+        const lastPart = chunk.subarray(lineStart);
+
+        const chunkLines = []; // 本块发现的完整行，升序。
+        if (firstChunk) {
+          firstChunk = false;
+          // EOF 尾行不完整 = 崩溃残留，不是事件（与 readRaw 同判据）。残尾 = lastPart，弃。
+          truncatedTail = lastPart.length > 0;
+          removedBytes = lastPart.length;
+          partialMode = truncatedTail && parts.length === 0; // 残行是否还向上跨块。
+          if (parts.length > 0) {
+            // 首块无 carry 可拼：lastPart 即使像行头也只是残尾，不参与拼接。
+            if (atFileStart) chunkLines.push(parts[0]);
+            else carry = parts[0]; // 跨下界行的尾段，等更早的块拼它的行头。
+            for (let i = 1; i < parts.length; i += 1) chunkLines.push(parts[i]);
+          }
+          // parts.length === 0：整块都是残尾——无完整行、无 carry，落到下方统一判停。
+        } else if (partialMode) {
+          // 残行仍在向上延伸：整块无换行 → 整块都是残行；遇到换行 → 残行在本块的
+          // lastPart 处收口（头段计入残尾），其余段恢复常规处理（carry 必为 null——
+          // 残行独占 EOF 一侧，没有真实行跨过它与上块的边界）。
+          if (parts.length === 0) {
+            removedBytes += bytesRead;
+          } else {
+            removedBytes += lastPart.length;
+            partialMode = false;
+            if (atFileStart) chunkLines.push(parts[0]);
+            else carry = parts[0];
+            for (let i = 1; i < parts.length; i += 1) chunkLines.push(parts[i]);
+          }
+        } else if (parts.length === 0) {
+          // 整块无换行：整块是跨上界行的**头**段，与 carry（它的尾）拼接；
+          // 到文件起点即收尾成完整行，否则它仍是中间 fragment，继续作为 carry 下传。
+          const joined = Buffer.concat([lastPart, carry ?? emptyBuffer]);
+          if (atFileStart) chunkLines.push(joined);
+          else carry = joined;
+        } else {
+          if (atFileStart) chunkLines.push(parts[0]);
+          for (let i = 1; i < parts.length; i += 1) chunkLines.push(parts[i]);
+          // 末段（本块最高偏移）是跨上界行的**头**，与 carry（它的尾）拼成完整行；
+          // carry 为 null 只发生在首块——首块已把 lastPart 当残尾弃掉，不拼。
+          if (carry !== null) chunkLines.push(Buffer.concat([lastPart, carry]));
+          carry = atFileStart ? null : parts[0];
+        }
+
+        if (chunkLines.length > 0) found.push(chunkLines);
+
+        if (stop === null) {
+          if (atFileStart) stop = 'fileStart';
+          else if (readBytes >= maxBytes) stop = 'byteLimit';
+          else if (untilSeq > 0 && chunkLines.length > 0) {
+            // 本块最早一行（chunkLines[0]）的 seq ≤ untilSeq 即越过边界；多余的低 seq 行最后滤除。
+            const earliest = parseLine(chunkLines[0].toString('utf8'), 0);
+            if (earliest.seq <= untilSeq) stop = 'seqBoundary';
+          }
+        }
+      }
+
+      // 组间倒排（回读次序 → 文件次序），组内本就升序。
+      const lines = [];
+      for (let i = found.length - 1; i >= 0; i -= 1) lines.push(...found[i]);
+      const events = lines.map((line) => parseLine(line.toString('utf8'), 0));
+      events.sort((a, b) => a.seq - b.seq);
+      const filtered = untilSeq > 0 ? events.filter((event) => event.seq > untilSeq) : events;
+      return { events: filtered, truncatedTail, stop, keepBytes: size - removedBytes, removedBytes };
+    } finally {
+      await handle.close();
+    }
   }
 
   async function tail(n) {
@@ -347,5 +499,5 @@ export function createEventStore({ sessionDir, clock = Date.now, idFactory = ran
     return { truncatedTail: truncated };
   }
 
-  return { append, appendBatch, readAll, tail, rebuildProjection, repair, currentProjection };
+  return { append, appendBatch, readAll, readTail, tail, rebuildProjection, repair, currentProjection };
 }

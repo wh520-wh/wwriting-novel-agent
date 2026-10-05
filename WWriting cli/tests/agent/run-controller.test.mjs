@@ -9,11 +9,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createRunController, createDefaultToolsFactory } from '../../src/agent/run-controller.mjs';
-import { DEFAULT_HISTORY_BUDGET_CHARS, findRetryableTurn } from '../../src/agent/history.mjs';
+import { DEFAULT_HISTORY_BUDGET_CHARS, buildHistoryMessages, findRetryableTurn, projectTurns } from '../../src/agent/history.mjs';
 import { createSkillService } from '../../src/skills/index.mjs';
 import { createSessionManager } from '../../src/session/session-manager.mjs';
 import { createEventStore } from '../../src/session/event-store.mjs';
-import { createWorkspaceStore } from '../../src/storage/workspace-store.mjs';
+import { createWorkspaceStore, workspaceIdForPath } from '../../src/storage/workspace-store.mjs';
 import { createPermissionState } from '../../src/tools/permissions.mjs';
 import { createChapterService } from '../../src/tools/chapters.mjs';
 
@@ -877,6 +877,10 @@ test('历史读取抛错：该轮仍正常跑完（不判失败），并有降�
     handle.eventStore = {
       ...store,
       readAll: async () => {
+        throw new Error('事件日志损坏，无法作为事件解析。');
+      },
+      // 有界读（规格 2026-10-06 T2）之后 loadHistory 走 readTail——读路径损坏要拦在同一条路上。
+      readTail: async () => {
         throw new Error('事件日志损坏，无法作为事件解析。');
       },
     };
@@ -1890,5 +1894,168 @@ test('立即提交：连按多条立即——后按的先跑，每次打断在�
     );
   } finally {
     await controller.close();
+  }
+});
+
+// —— 有界读历史（规格 2026-10-06 T2/D4）：等价性契约 ——
+//
+// messages 必须与全量读逐字节一致；只有 historyMeta 的省略数随窗口截断降级为「N+」口径。
+
+test('有界读历史：小会话窗口即全量——messages 与全量口径逐字节一致、计数精确', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-bounded-small-');
+  const projectRoot = path.join(root, 'novel');
+  const model = makeRecordingModel({ textFor: (index) => `第${index + 1}章正文。` });
+  const { controller } = await makeRealLoopController({ root, projectRoot, modelClient: model });
+
+  try {
+    for (let i = 0; i < 4; i += 1) {
+      const result = await controller.submit({ text: `写第${i + 1}章` });
+      assert.equal(result.result.status, 'completed');
+    }
+
+    // 手工按全量口径重算第 5 轮应有的历史段，与实际发出的逐字节比对。
+    const events = await controllerEvents(controller);
+    const lastStarted = events.filter((event) => event.type === 'run_started').at(-1);
+    const built = buildHistoryMessages(
+      projectTurns(events.filter((event) => event.seq < lastStarted.seq)),
+      { budgetChars: DEFAULT_HISTORY_BUDGET_CHARS },
+    );
+    const sent = model.calls.at(-1).messages;
+    // 去掉 system、项目记忆（空目录也会注入「尚无 WWRITING.md」的占位记忆）与当前输入。
+    const historySent = sent.slice(1, sent.length - 1)
+      .filter((message) => !String(message.content).startsWith('[Project Memory'));
+    assert.deepEqual(historySent, built.messages);
+
+    const applied = events.filter((event) => event.type === 'history_applied').at(-1);
+    assert.equal(applied.data.truncated_exact, true, '窗口即全量，省略数精确');
+    assert.equal(applied.data.covered_exact, true);
+    assert.equal(applied.data.truncated_turns, built.truncatedTurns);
+  } finally {
+    await controller.close();
+  }
+});
+
+test('有界读历史：超预算大日志按字节窗截断——messages 仍与全量一致，省略数降级「N+」', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-bounded-big-');
+  const projectRoot = path.join(root, 'novel');
+  const loop = makeLoopFactory();
+  const { controller } = await makeController({ root, projectRoot, agentLoopFactory: loop.factory });
+
+  try {
+    // 每轮用户原文 ~0.6KB（input_submitted + run_started 各带一份）→ 260 轮 ≈ 620KB 日志，
+    // 超过 512KiB 起步窗口；轮次可见字符 ~0.6KB，40 轮就装满 24000 字预算。
+    for (let i = 0; i < 260; i += 1) {
+      const result = await controller.submit({ text: `写第${i + 1}章：${'情节推进。'.repeat(120)}` });
+      assert.equal(result.result.status, 'completed');
+    }
+
+    const last = loop.runs.at(-1);
+    assert.equal(last.historyMeta.truncatedExact, false, '窗口被字节上限截断时如实降级');
+    assert.equal(last.historyMeta.truncatedTurns > 0, true);
+
+    // 等价性核心：messages 与全量口径逐字节一致——预算装满后更早的轮必被丢弃，不读它们不改变结果。
+    const events = await loop.events();
+    const lastStarted = events.filter((event) => event.type === 'run_started').at(-1);
+    const built = buildHistoryMessages(
+      projectTurns(events.filter((event) => event.seq < lastStarted.seq)),
+      { budgetChars: DEFAULT_HISTORY_BUDGET_CHARS },
+    );
+    assert.deepEqual(last.history, built.messages);
+  } finally {
+    await controller.close();
+  }
+});
+
+test('有界读历史：摘要覆盖数来自 covered_total，二次压缩累计正确', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-bounded-digest-');
+  const projectRoot = path.join(root, 'novel');
+  const COMPACTION_SYSTEM_PROMPT = (await import('../../src/agent/compact.mjs')).COMPACTION_SYSTEM_PROMPT;
+  let compactionCalls = 0;
+  const normalRequests = [];
+  const modelClient = {
+    async streamChat({ messages, onDelta }) {
+      if (messages[0]?.content === COMPACTION_SYSTEM_PROMPT) {
+        compactionCalls += 1;
+        const text = `第${compactionCalls}次摘要。`;
+        onDelta(text);
+        return { text, toolCalls: [], usage: null };
+      }
+      normalRequests.push(structuredClone(messages));
+      onDelta('好。');
+      return { text: '好。', toolCalls: [], usage: null };
+    },
+  };
+  const { controller } = await makeRealLoopController({ root, projectRoot, modelClient });
+
+  try {
+    await controller.submit({ text: '第一章情节' });
+    await controller.compact();
+    await controller.submit({ text: '第二章情节' });
+    await controller.compact();
+
+    const events = await controllerEvents(controller);
+    const digests = events.filter((event) => event.type === 'digest_compacted');
+    assert.deepEqual(digests.map((digest) => digest.data.covered_total), [1, 2], 'covered_total 随压缩累计');
+
+    await controller.submit({ text: '第三章情节' });
+    const applied = (await controllerEvents(controller)).filter((event) => event.type === 'history_applied').at(-1);
+    assert.equal(applied.data.covered_turns, 2);
+    assert.equal(applied.data.covered_exact, true);
+    assert.equal(applied.data.truncated_exact, true);
+
+    // 第三轮开工：看到最新摘要，看不到任何被覆盖轮次的原文。
+    const flat = normalRequests.at(-1).map((message) => message.content).join('\n');
+    assert.match(flat, /\[会话摘要\]/);
+    assert.match(flat, /第2次摘要。/);
+    assert.equal(flat.includes('第一章情节'), false);
+    assert.equal(flat.includes('第二章情节'), false);
+  } finally {
+    await controller.close();
+  }
+});
+
+test('有界读历史：旧摘要事件没有 covered_total——覆盖数降级为不带数字的说法', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-legacy-digest-');
+  const projectRoot = path.join(root, 'novel');
+  const loop = makeLoopFactory();
+  const { controller } = await makeController({ root, projectRoot, agentLoopFactory: loop.factory });
+  const sessionId = controller.snapshot().session_id;
+
+  // 第一轮正常跑，然后关会话、手工补一条「旧版本写的」摘要事件（没有 covered_total）。
+  await controller.submit({ text: '第一章情节' });
+  await controller.close();
+  const events = await (async () => {
+    const dir = path.join(root, 'WWriting', 'workspaces', workspaceIdForPath(projectRoot), 'sessions', sessionId);
+    return fs.readFile(path.join(dir, 'events.jsonl'), 'utf8');
+  })();
+  const nextSeq = events.trimEnd().split('\n').length + 1;
+  const legacyDigest = `${JSON.stringify({
+    schema_version: 1,
+    seq: nextSeq,
+    event_id: 'legacy-digest',
+    at: '2026-10-06T00:00:00.000Z',
+    type: 'digest_compacted',
+    session_id: sessionId,
+    run_id: null,
+    data: { digest: '旧版本写的摘要。', through_seq: nextSeq - 1, chars: 7, covered_turns: 1 },
+  })}\n`;
+  const dir = path.join(root, 'WWriting', 'workspaces', workspaceIdForPath(projectRoot), 'sessions', sessionId);
+  await fs.appendFile(path.join(dir, 'events.jsonl'), legacyDigest);
+
+  // 重开会话再提交：摘要在（投影 fold 认它），覆盖数不可知。
+  const reopened = makeLoopFactory();
+  const { controller: controller2 } = await makeController({ root, projectRoot, agentLoopFactory: reopened.factory });
+  try {
+    const submitted = await controller2.submit({ text: '第二章情节' });
+    assert.equal(submitted.result.status, 'completed');
+    const meta = reopened.runs.at(-1).historyMeta;
+    assert.equal(meta.coveredExact, false);
+    assert.equal(meta.coveredTurns, 0);
+    assert.equal(meta.truncatedExact, true, '窗口到达 seq 边界，省略数仍精确');
+    const flat = reopened.runs.at(-1).history.map((message) => message.content).join('\n');
+    assert.match(flat, /\[会话摘要\]/);
+    assert.match(flat, /旧版本写的摘要。/);
+  } finally {
+    await controller2.close();
   }
 });
