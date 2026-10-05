@@ -30,6 +30,7 @@
 | [0021](./0021-ctrl-s-immediate-submit.md) | Ctrl+S 立即提交：草稿成为下一条活动输入，有活动轮先打断（终端侧有意偏离上游 P3） |
 | [0022](./0022-slash-menu-enter-submits.md) | 斜杠菜单回车提交原文，有意偏离上游 §4.7 的「Enter 只填入不执行」 |
 | [0023](./0023-now-interrupt-promote.md) | `/now` 保留打断式提升（裁决 A3）：打断当前轮、同一 drain 接手，有意偏离上游 P3 |
+| [0024](./0024-append-only-single-file-bounded-reads.md) | 会话存储保持 append-only 单文件：读侧有界化，不分片、不建注册表（有意偏离上游 §19/§24） |
 
 > 0006–0008 是 `WWRITING.md` 项目记忆的设计决策（铁律 7）。并发写语义已随 Q12 拍板（最后写者赢，
 > 防线是确认卡显示变更）；`/init` 更新契约经 2026-09-28 对抗性审查收敛为
