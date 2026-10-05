@@ -115,7 +115,7 @@ export function createOnboarding({
   // 拿配置里现有的 Key 取真实模型列表（重新配置时先跑一次：顺便确认这个 Key 现在还能用）。
   async function tryList() {
     if (typeof listModels !== 'function') return [];
-    result('正在向端点要可用模型……');
+    result('正在获取可用模型……');
     try {
       return await listModels();
     } catch (error) {
@@ -129,7 +129,7 @@ export function createOnboarding({
   async function askKey() {
     say(reconfigure ? '填入 API Key' : STEP_KEY);
     result(`在 ${provider.createKeyUrl} 创建后粘贴进来，回车即验证。`);
-    result('直接回车 = 先跳过（发消息时会提示「未配置」）。');
+    result('直接回车 = 跳过，发消息时会提示「未配置」');
     for (;;) {
       const line = await readLine({});
       // 输入流没了或用户按了 Ctrl+C：这不是「跳过」，是「退出这一步」——
@@ -138,7 +138,7 @@ export function createOnboarding({
       const key = sanitizeInput(line);
       if (key === '') return { state: 'skipped', models: [] };
       if (isCommandLike(key)) {
-        warn('设置还没结束，命令先放一放；想退出按 Ctrl+C。');
+        warn('命令先放一放 · 想退出按 Ctrl+C');
         continue;
       }
 
@@ -177,7 +177,7 @@ export function createOnboarding({
       const name = sanitizeInput(line);
       if (name === '') return null;
       if (isCommandLike(name)) {
-        warn('设置还没结束，命令先放一放；想退出按 Ctrl+C。');
+        warn('命令先放一放 · 想退出按 Ctrl+C');
         continue;
       }
       if (looksLikeApiKey(name)) {
@@ -201,10 +201,10 @@ export function createOnboarding({
       if (!reconfigure) say(STEP_MODEL);
       const items = [
         ...models.map((id) => ({ id, label: id })),
-        { id: MANUAL_MODEL_ID, label: '✎ 自己输入模型名' },
+        { id: MANUAL_MODEL_ID, label: '自己输入模型名' },
       ];
       if (reconfigure && (await readState()).hasKey) {
-        items.push({ id: CHANGE_KEY_ID, label: '⌘ 换 API Key' });
+        items.push({ id: CHANGE_KEY_ID, label: '换 API Key' });
       }
       const chosen = await select.ask({
         title: null,
@@ -252,7 +252,7 @@ export function createOnboarding({
     let hasKey = before.hasKey;
 
     if (before.corruptModel) {
-      result('模型名那一格之前存进了一个 API Key，会把它挪回 API Key 的位置。');
+      result('模型名那一格之前存进了一个 API Key，会挪回 Key 的位置。');
     }
 
     // 从被写坏的那一格把 Key 捞回来：先验一次。通过就直接修好配置——那一格里的 Key
@@ -286,12 +286,12 @@ export function createOnboarding({
             say('未做改动。');
             return;
           }
-          warn('已跳过 API Key：发消息时会提示「未配置」，输入 /model 随时可以补上。');
+          warn('已跳过 API Key：发消息时会提示「未配置」，/model 可随时补上');
           return;
         }
         // 首次设置：跳过也要写下一份最小配置，标记「问过了」，否则每次启动都会再问一遍。
         await saveQuietly({}, '无法保存配置，下次启动会再问一次。');
-        warn('已跳过设置：发消息时会提示「未配置」，输入 /model 随时可以补上。');
+        warn('已跳过设置：发消息时会提示「未配置」，/model 可随时补上');
         return;
       }
     } else if (reconfigure) {
@@ -307,7 +307,7 @@ export function createOnboarding({
         say('未做改动。');
         return;
       }
-      warn('还没选模型：发消息时会提示「未配置」，输入 /model 随时可以补上。');
+      warn('还没选模型：发消息时会提示「未配置」，/model 可随时补上');
       return;
     }
     if (!(await saveQuietly({ model }, '保存模型失败，请稍后重试。'))) return;

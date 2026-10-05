@@ -269,7 +269,7 @@ test('设置期间敲斜杠命令：明确说清先放一放，也不把它当�
 
   await onboarding.start();
 
-  assert.ok(renderer.text().includes('设置还没结束'));
+  assert.ok(renderer.text().includes('命令先放一放'));
   assert.equal(saves.some((options) => options.apiKey === '/model key'), false);
   assert.deepEqual(saves[0], { configPath: CONFIG_PATH, apiKey: KEY });
 });
@@ -426,7 +426,7 @@ test('重配置：从写坏的模型名里把 Key 捞回来（用户一个字符
 
   await onboarding.start();
 
-  assert.ok(renderer.text().includes('会把它挪回 API Key 的位置'), '先说明白要做什么');
+  assert.ok(renderer.text().includes('挪回 Key 的位置'), '先说明白要做什么');
   assert.ok(renderer.text().includes(`已找回 API Key：${maskApiKey(KEY)}`), '捞回来并说清是哪一个');
   assert.equal(readLine.prompts.length, 0, '一个字都不用重新输入');
   assert.deepEqual(saves[0], { configPath: CONFIG_PATH, apiKey: KEY }, '垃圾 Key 被真 Key 顶掉');

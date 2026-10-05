@@ -374,7 +374,7 @@ export function createCommandHandler({
       }
       reply(`当前 ${effortState.describe()}`, {
         tone: 'info',
-        detail: `可用 ${caps.levels.join('、')} · 自动 = 由本工具按默认档位下发 · 下一轮生效`,
+        detail: `可用 ${caps.levels.join('、')} · 自动 = 按默认档位下发 · 下一轮生效`,
       });
       return;
     }
@@ -443,9 +443,10 @@ export function createCommandHandler({
     }
     // 上游那句 22 字的原文放 detail——它是**展开详情**级别的说明，
     // 不是状态行主文案（R7：原计划把它当主文案用，超了 2–6 字三倍多）。
+    // 「全文不跨重启保留」同时说明了「重启后只重演耗时」，不再复述一遍。
     reply('无思考内容', {
       tone: 'info',
-      detail: '没有可查看的思考内容（本次无输出或该模型不支持）；重启后只重演「思考 N 秒」，全文不跨重启保留。',
+      detail: '没有可查看的思考内容（本次无输出或该模型不支持）· 全文不跨重启保留',
     });
   }
 
@@ -462,7 +463,7 @@ export function createCommandHandler({
     }
     const config = state.config;
     if (state.state === 'empty') {
-      reply('尚未配置模型', { tone: 'warn', detail: '输入 /model 跟着走一遍就好。' });
+      reply('尚未配置模型', { tone: 'warn', detail: '输入 /model 开始设置' });
       return;
     }
     // 一行一项、左列对齐（与启动头部面板同一套观感），扫一眼就知道现在用的是哪套配置。
@@ -479,7 +480,7 @@ export function createCommandHandler({
       reply('API Key 来自环境变量 DEEPSEEK_API_KEY', { tone: 'warn', detail: '它当前覆盖了配置文件里的设置' });
     }
     // 配置是给人看的，也要告诉人怎么改——「不知道怎么配」正是新用户卡住的地方。
-    reply('改模型 / 换 Key：输入 /model', { tone: 'info' });
+    reply('修改：输入 /model', { tone: 'info' });
     // 已经写坏的那种（模型名位置上放着 API Key）要点名说清，否则用户只会看到后面那句
     // 让人越走越远的「API Key 无效」。
     if (state.corruptModel) {
@@ -561,7 +562,7 @@ export function createCommandHandler({
     const snapshot = getController().snapshot();
     const plan = snapshot?.plan ?? null;
     if (plan === null || !Array.isArray(plan.items) || plan.items.length === 0) {
-      reply('暂无计划', { tone: 'info', detail: '多步任务进行时，这里会显示当前计划。' });
+      reply('暂无计划', { tone: 'info', detail: '多步任务进行时显示当前计划' });
       return;
     }
     renderer.printPlan(plan.items);

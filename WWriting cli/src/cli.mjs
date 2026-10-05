@@ -61,8 +61,9 @@ function startupLabel(parsed) {
 const NOT_INTERACTIVE_FACT = '需要在一个可交互的终端里运行，请在 Windows Terminal 或 PowerShell 中直接启动 wwriting。';
 
 // 头部面板的两句固定文案：副标题说明这是什么，提示行说明第一屏能做什么。
+// 长度纪律：提示行要在 80 列终端里放得下一行（≤76 显示列），断行拆词比短更难看。
 const PANEL_SUBTITLE = '长篇写作智能体';
-const PANEL_HINT = '直接输入开始写作 · /help 查看命令 · Ctrl+C 停止当前轮 · Shift+Tab 切换权限模式 · Ctrl+S 立即发送';
+const PANEL_HINT = '直接输入开始写作 · /help · Ctrl+C 停止 · Shift+Tab 权限 · Ctrl+S 立即发送';
 
 // 命令主入口。io 至少包含 { stdin, stdout, stderr, env, cwd }，注入后可在无 TTY 环境测试。
 // 返回退出码数字；仅在真实进程入口处写入 process.exitCode。
@@ -363,7 +364,7 @@ export async function main(
     // 旧版把损坏也说成「配置不可用 · 检查读取权限」，用户照着查权限只会白忙一场。
     if (configState.state === 'invalid') return '配置已损坏 · 输入 /model 重新设置';
     const config = configState.config;
-    if (configState.state === 'empty') return '未配置 · 输入 /model 跟着走一遍就好';
+    if (configState.state === 'empty') return '未配置 · 输入 /model 开始设置';
     // 模型名那一格放着 API Key（真实发生过）：这一行必须点名，否则用户只会看到后面那句
     // 把他引向 Key 的「API Key 无效」，然后一路查下去。
     if (configState.corruptModel) return '模型设置已损坏 · 输入 /model 重新设置';

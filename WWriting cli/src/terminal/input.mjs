@@ -486,17 +486,24 @@ export function createInputReader({
     const { matches, index } = state;
     let start = 0;
     if (matches.length > room) start = Math.max(0, Math.min(index - (room >> 1), matches.length - room));
+    // 说明列对齐（与 /help 的两栏同一版式）：名字补齐到清单里最宽的再加 3 格。
+    // 列宽按**整份清单**算而不是可见窗口——滚动时说明列不漂移；放不下时自动收窄。
+    const nameWidth = Math.min(
+      Math.max(1, ...matches.map((command) => displayWidth(String(command?.name ?? '')))),
+      Math.max(1, width - 5),
+    );
     const rows = [];
     for (let i = start; i < matches.length && rows.length < room; i += 1) {
       const selected = i === index;
       const mark = selected ? `${USER_MARK} ` : '  ';
       const nameRoom = Math.max(0, width - displayWidth(mark));
       const name = clipToWidth(String(matches[i].name ?? ''), Math.max(1, nameRoom));
-      const used = displayWidth(mark) + displayWidth(name);
+      const used = displayWidth(mark) + nameWidth + 3;
       const description = typeof matches[i].description === 'string' ? matches[i].description : '';
-      const desc = description !== '' ? clipToWidth(`  ${description}`, Math.max(0, width - used)) : '';
+      const gap = description === '' ? '' : ' '.repeat(Math.max(3, nameWidth - displayWidth(name) + 3));
+      const desc = description === '' ? '' : clipToWidth(description, Math.max(0, width - used));
       const tone = selected ? 'accent' : 'info';
-      rows.push(`${paintText(`${mark}${name}`, tone, useColor)}${desc === '' ? '' : paintText(desc, tone, useColor)}`);
+      rows.push(`${paintText(`${mark}${name}${gap}`, tone, useColor)}${desc === '' ? '' : paintText(desc, tone, useColor)}`);
     }
     rows.push(paintText(clipToWidth(MENU_HINT, width), 'info', useColor));
     return rows.join('\n');
