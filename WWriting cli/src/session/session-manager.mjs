@@ -9,7 +9,7 @@
 //   openLatest / openById / create 返回的会话句柄持有写锁，句柄上的全部写入都在锁内完成；
 //   第二个进程（或本进程的第二次打开）拿不到写锁时收到 SESSION_BUSY；
 //   snapshot 与 list 只读、不取锁，第二个进程始终可以查看。
-import { mkdir, readdir, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { acquireSessionLock } from '../storage/process-lock.mjs';
@@ -304,26 +304,69 @@ export function createSessionManager({
       if (!entry.isDirectory()) continue;
       const sessionDir = path.join(sessionsDir, entry.name);
       if (!(await hasEventLog(sessionDir))) continue;
-      const store = eventStoreFactory({ sessionDir, clock, idFactory });
-      // 同一趟读里同时拿到投影与轮次：rebuildProjection 本来就已把日志全量读了一遍，
-      // 再为轮次多读一次 log 是白花的 I/O。
-      const { events } = await store.readAll();
-      const projection = foldEvents(events);
-      summaries.push({
-        session_id: projection.session_id ?? entry.name,
-        status: projection.status,
-        title: projection.title,
-        created_at: projection.created_at,
-        updated_at: projection.updated_at,
-        last_seq: projection.last_seq,
-        // 轮次数是**真实对话轮次**（run_started 的条数），不是事件数。
-        // 绝不能把 last_seq 当轮次数显示：一轮对话会产生几十条事件，
-        // 那样算出来的数字会让用户对「这个会话有多少上下文」判断离谱。
-        turns: projectTurns(events).length,
-      });
+      // 封面优先（规格 2026-10-06 D2）：state.json 是每次 append 都原子重写的投影缓存，
+      // 读它出摘要 = 每会话一次小文件读，不再为标题/轮次全量读日志。
+      // 封面不可信（缺失/损坏/身份不符/旧形状）才回退全量折算——list 保持只读，
+      // 不把折算结果写回（自愈归打开写者时的 repair()，它本来就重写缓存）。
+      const summary = (await readCoverSummary(sessionDir, entry.name))
+        ?? (await foldSummary(sessionDir, entry.name));
+      if (summary !== null) summaries.push(summary);
     }
     summaries.sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0));
     return summaries;
+  }
+
+  // 封面摘要：state.json 可解析、身份与目录名一致、字段形状齐全才算数。
+  // turns 的在位性兼作版本标记——旧形状缓存没有它，只能走回退折算。
+  async function readCoverSummary(sessionDir, dirName) {
+    let raw;
+    try {
+      raw = await readFile(path.join(sessionDir, 'state.json'), 'utf8');
+    } catch {
+      return null;
+    }
+    let state;
+    try {
+      state = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+    if (state === null || typeof state !== 'object' || Array.isArray(state)) return null;
+    if (state.session_id !== dirName || typeof state.session_id !== 'string') return null;
+    if (!Number.isInteger(state.last_seq) || state.last_seq < 0) return null;
+    if (!Number.isInteger(state.turns) || state.turns < 0) return null;
+    if (typeof state.updated_at !== 'string' || state.updated_at === '') return null;
+    if (typeof state.status !== 'string' || state.status === '') return null;
+    return {
+      session_id: state.session_id,
+      status: state.status,
+      title: typeof state.title === 'string' ? state.title : '',
+      created_at: typeof state.created_at === 'string' ? state.created_at : null,
+      updated_at: state.updated_at,
+      last_seq: state.last_seq,
+      turns: state.turns,
+    };
+  }
+
+  // 回退摘要：全量读日志折算（旧实现的路径）。
+  async function foldSummary(sessionDir, dirName) {
+    const store = eventStoreFactory({ sessionDir, clock, idFactory });
+    // 同一趟读里同时拿到投影与轮次：rebuildProjection 本来就已把日志全量读了一遍，
+    // 再为轮次多读一次 log 是白花的 I/O。
+    const { events } = await store.readAll();
+    const projection = foldEvents(events);
+    return {
+      session_id: projection.session_id ?? dirName,
+      status: projection.status,
+      title: projection.title,
+      created_at: projection.created_at,
+      updated_at: projection.updated_at,
+      last_seq: projection.last_seq,
+      // 轮次数是**真实对话轮次**（run_started 的条数），不是事件数。
+      // 绝不能把 last_seq 当轮次数显示：一轮对话会产生几十条事件，
+      // 那样算出来的数字会让用户对「这个会话有多少上下文」判断离谱。
+      turns: projectTurns(events).length,
+    };
   }
 
   return {

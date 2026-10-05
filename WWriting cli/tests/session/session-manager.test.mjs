@@ -659,3 +659,95 @@ test('list 的轮次数是真实对话轮次，不是事件数（last_seq 会大
     throw error;
   }
 });
+
+test('list 信任 state.json 封面：封面合法时直接采信，不为摘要读日志（规格 2026-10-06 D2）', async () => {
+  const root = await makeTempRoot('wwriting-mgr-cover-');
+  const projectRoot = path.join(root, 'novel');
+  const manager = makeManager(root);
+  const workspaceStore = createWorkspaceStore({ appDataRoot: root, clock: makeClock() });
+  await workspaceStore.ensure(projectRoot);
+  const dir = path.join(workspaceStore.sessionsRoot(projectRoot), 'cover-sess');
+  await fs.mkdir(dir, { recursive: true });
+  // 日志说「日志里的标题」、封面说「封面标题」且轮次为 3——两者刻意可区分：
+  // 封面合法时 list 必须采信封面（证明它没有走全量折算）。
+  await fs.writeFile(path.join(dir, 'events.jsonl'), `${JSON.stringify({
+    schema_version: 1, seq: 1, event_id: 'e1', at: '2026-10-06T00:00:00.000Z',
+    type: 'session_created', session_id: 'cover-sess', run_id: null, data: { title: '日志里的标题' },
+  })}\n`, 'utf8');
+  await fs.writeFile(path.join(dir, 'state.json'), `${JSON.stringify({
+    session_id: 'cover-sess', status: 'idle', title: '封面标题',
+    created_at: '2026-10-06T00:00:00.000Z', updated_at: '2026-10-06T00:01:00.000Z',
+    last_seq: 1, turns: 3,
+  })}\n`, 'utf8');
+
+  const [item] = await manager.list(projectRoot);
+  assert.equal(item.session_id, 'cover-sess');
+  assert.equal(item.title, '封面标题');
+  assert.equal(item.turns, 3);
+  assert.equal(item.last_seq, 1);
+});
+
+test('list 回退：封面缺失/损坏/旧形状/身份不符时全量折算，摘要与旧实现一致（规格 2026-10-06 D2）', async () => {
+  const root = await makeTempRoot('wwriting-mgr-cover-fallback-');
+  const projectRoot = path.join(root, 'novel');
+  const manager = makeManager(root);
+  const workspaceStore = createWorkspaceStore({ appDataRoot: root, clock: makeClock() });
+  await workspaceStore.ensure(projectRoot);
+  const sessionsRoot = workspaceStore.sessionsRoot(projectRoot);
+
+  function line(sessionId, seq, type, data, runId = null) {
+    return `${JSON.stringify({
+      schema_version: 1, seq, event_id: `e-${sessionId}-${seq}`, at: '2026-10-06T00:00:00.000Z',
+      type, session_id: sessionId, run_id: runId, data,
+    })}\n`;
+  }
+  async function makeSessionDir(name, stateContent) {
+    const dir = path.join(sessionsRoot, name);
+    await fs.mkdir(dir, { recursive: true });
+    const events = [
+      line(name, 1, 'session_created', { title: `${name} 的标题` }),
+      line(name, 2, 'input_submitted', { input_id: 'in-1', text: '写' }),
+      line(name, 3, 'run_started', { input_id: 'in-1', text: '写' }, 'run-1'),
+      line(name, 4, 'run_completed', {}, 'run-1'),
+    ].join('');
+    await fs.writeFile(path.join(dir, 'events.jsonl'), events, 'utf8');
+    if (stateContent !== null) {
+      await fs.writeFile(path.join(dir, 'state.json'), stateContent, 'utf8');
+    }
+  }
+  // 四种封面形态：缺失、坏 JSON、旧形状（无 turns）、session_id 与目录名不符。
+  await makeSessionDir('no-cover', null);
+  await makeSessionDir('bad-json', '{not json');
+  await makeSessionDir('old-shape', `${JSON.stringify({ session_id: 'old-shape', status: 'idle', title: '旧形状', updated_at: '2026-10-06T00:00:00.000Z', last_seq: 4 })}\n`);
+  await makeSessionDir('wrong-id', `${JSON.stringify({ session_id: 'someone-else', status: 'idle', title: '错身份', updated_at: '2026-10-06T00:00:00.000Z', last_seq: 4, turns: 99 })}\n`);
+
+  const items = await manager.list(projectRoot);
+  assert.equal(items.length, 4);
+  for (const item of items) {
+    // 全部回退到折算：标题来自日志，轮次来自 run_started 计数——封面的「轮次 99」绝不采信。
+    assert.equal(item.title, `${item.session_id} 的标题`);
+    assert.equal(item.turns, 1);
+    assert.equal(item.status, 'idle');
+    assert.equal(item.last_seq, 4);
+  }
+});
+
+test('list 的轮次随运行落进封面：create→run→close→list 出真实轮次（规格 2026-10-06 D1/D2）', async () => {
+  const root = await makeTempRoot('wwriting-mgr-cover-live-');
+  const projectRoot = path.join(root, 'novel');
+  const manager = makeManager(root);
+
+  const session = await manager.create(projectRoot, { title: '在写的书' });
+  try {
+    const submitted = await session.submit({ text: '开写' });
+    await session.append({ type: 'run_started', run_id: 'run-1', data: { input_id: submitted.input_id, text: '开写' } });
+    await session.append({ type: 'run_completed', run_id: 'run-1', data: {} });
+  } finally {
+    await session.close();
+  }
+
+  const [item] = await manager.list(projectRoot);
+  assert.equal(item.title, '在写的书');
+  assert.equal(item.turns, 1);
+  assert.equal(item.status, 'idle');
+});

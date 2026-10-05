@@ -23,6 +23,9 @@ const blankProjection = () => ({
   created_at: null,
   updated_at: null,
   last_seq: 0,
+  // 真实对话轮次 = run_started 的条数（与 history.projectTurns 的口径逐字一致，含 open/重试轮）。
+  // 随投影落进 state.json：list() 据此出「封面摘要」，不再为轮次全量读日志（规格 2026-10-06 D1）。
+  turns: 0,
   // 当前任务计划（上一条 plan_updated 的整表，含 status）。null = 没有（Run 开始时清空，
   // 对齐上游统一行为规格书 §4.2 生命周期口径 A「新 Run 的 run_started 清空上一轮计划」；
   // Run 结束不清——scrollback 与 /plan 都要能回看）。
@@ -88,6 +91,7 @@ function applyEvent(state, event) {
       // 新一轮开始：上一轮的任务计划随之作废（口径 A）。本轮没有计划就一直是 null，
       // /plan 与重演据此如实说「暂无」，绝不拿上一轮的旧计划冒充当前状态。
       projection.plan = null;
+      projection.turns += 1;
       const inputId = typeof data.input_id === 'string' ? data.input_id : null;
       if (inputId !== null) {
         const from = queueIndexOf(projection, inputId);

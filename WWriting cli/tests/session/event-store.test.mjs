@@ -8,6 +8,7 @@ import os from 'node:os';
 import fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createEventStore } from '../../src/session/event-store.mjs';
+import { projectTurns } from '../../src/agent/history.mjs';
 
 // 临时目录登记：测试结束时统一删除。
 const tempRoots = [];
@@ -388,4 +389,33 @@ test('plan_updated 后崩溃重建：state.json 损坏时从日志如实恢复�
   await fs.writeFile(path.join(dir, 'state.json'), '', 'utf8');
   const rebuilt = await store.rebuildProjection();
   assert.deepEqual(rebuilt.projection.plan, { run_id: 'run-1', items });
+});
+
+test('turns 计数：每个 run_started 一轮，随 state.json 落盘（规格 2026-10-06 D1）', async () => {
+  const root = await makeTempRoot('wwriting-evt-turns-');
+  const dir = path.join(root, 'sess-1');
+  const store = makeStore(dir);
+
+  await store.append({ type: 'session_created', session_id: 'sess-1', data: { title: '' } });
+  await store.append({ type: 'input_submitted', session_id: 'sess-1', data: { input_id: 'in-1', text: '第一条' } });
+  await store.append({ type: 'run_started', session_id: 'sess-1', run_id: 'run-1', data: { input_id: 'in-1', text: '第一条' } });
+  await store.append({ type: 'run_completed', session_id: 'sess-1', run_id: 'run-1', data: {} });
+  await store.append({ type: 'input_submitted', session_id: 'sess-1', data: { input_id: 'in-2', text: '第二条' } });
+  await store.append({ type: 'run_started', session_id: 'sess-1', run_id: 'run-2', data: { input_id: 'in-2', text: '第二条' } });
+
+  const projection = await store.currentProjection();
+  assert.equal(projection.turns, 2);
+
+  // 落盘：state.json 带 turns 字段——封面化（list 直读）的数据源。
+  const state = JSON.parse(await fs.readFile(path.join(dir, 'state.json'), 'utf8'));
+  assert.equal(state.turns, 2);
+
+  // 与 projectTurns 的口径逐字一致：轮次数 == run_started 的条数。
+  const { events } = await store.readAll();
+  assert.equal(projectTurns(events).length, 2);
+
+  // 换一个 store（等价于重开）：从日志折算出的 turns 与内存一致。
+  const reopened = makeStore(dir);
+  const rebuilt = await reopened.rebuildProjection();
+  assert.equal(rebuilt.projection.turns, 2);
 });
