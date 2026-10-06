@@ -2075,3 +2075,40 @@ test('有界读历史：旧摘要事件没有 covered_total——覆盖数降级
     await controller2.close();
   }
 });
+
+test('withdrawQueued：撤回队首排队输入，其余不动，队列空返回 null（规格 2026-10-07 T2）', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-cancel-');
+  const projectRoot = path.join(root, 'novel');
+  // 第一轮挂起：好让后续两条输入确定性地进队列。
+  const loop = makeLoopFactory({ script: ['hold'] });
+  const { controller } = await makeController({ root, projectRoot, agentLoopFactory: loop.factory });
+
+  try {
+    const first = controller.submit({ text: '正在跑的这条' });
+    await waitFor(() => loop.runs.length === 1, { label: '第一轮开始' });
+    await controller.submit({ text: '排队的甲' });
+    await controller.submit({ text: '排队的乙' });
+    assert.deepEqual(controller.snapshot().queue.map((item) => item.text), ['排队的甲', '排队的乙']);
+
+    const withdrawn = await controller.withdrawQueued();
+    assert.deepEqual(withdrawn, { input_id: withdrawn.input_id, text: '排队的甲' });
+    assert.deepEqual(controller.snapshot().queue.map((item) => item.text), ['排队的乙']);
+
+    // 队列里剩下的那条照常被消费。
+    loop.release(0);
+    await first;
+    assert.deepEqual(loop.runs.map((run) => run.text), ['正在跑的这条', '排队的乙']);
+
+    // 队列已空：如实返回 null（事件不写、投影不动）。
+    const seqBefore = controller.snapshot().last_seq;
+    assert.equal(await controller.withdrawQueued(), null);
+    assert.equal(controller.snapshot().last_seq, seqBefore);
+
+    // 撤回事件进了日志：input_withdrawn 的目标正是被撤回那条。
+    const events = await controller.readEvents();
+    const withdrawnEvent = events.find((event) => event.type === 'input_withdrawn');
+    assert.equal(withdrawnEvent.data.input_id, withdrawn.input_id);
+  } finally {
+    await controller.close();
+  }
+});

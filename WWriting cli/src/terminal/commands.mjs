@@ -41,6 +41,16 @@ function row(label, value) {
 // 于是每一轮请求都带着一个不存在的模型名出去、换回一句「API Key 无效」，
 // 人就一路去查自己的 Key，再也找不到真正的问题。所以这两件事必须在解析这一层就分开：
 // **只要这一串里出现了 Key 的样式，它就一定是 Key，不是模型名。**
+// 排队原文 → 撤回详情的一行摘要：取首行、压空白、按码点截 40 字，多行/超长加省略号。
+function clipOneLine(text) {
+  const raw = typeof text === 'string' ? text : '';
+  const lines = raw.split(/\r?\n/);
+  const firstLine = (lines[0] ?? '').trim().replace(/\s+/g, ' ');
+  const points = Array.from(firstLine);
+  const truncated = points.length > 40 || lines.some((line, index) => index > 0 && line.trim() !== '');
+  return `${points.slice(0, 40).join('')}${truncated ? '…' : ''}`;
+}
+
 export function modelIntent(args) {
   const clean = sanitizeInput(args);
   if (clean === '') return { kind: 'dialog' };
@@ -712,6 +722,27 @@ export function createCommandHandler({
     }
   }
 
+  // /cancel：撤回队首排队输入（规格 2026-10-07 D7）。与 /now 对称——那边把队首提上来跑，
+  // 这边把队首拿掉不跑。运行中可用（撤回本来就是排队场景的动作）；队列空与 /now 同句。
+  // 屏幕反馈零新增：撤回事件的「排队已取消」终态行与实时区整表替换由事件桥负责。
+  async function runCancelCommand() {
+    const controller = getController();
+    if (typeof controller.withdrawQueued !== 'function') {
+      reply('暂不支持撤回。', { tone: 'warn' });
+      return;
+    }
+    try {
+      const withdrawn = await controller.withdrawQueued();
+      if (withdrawn === null) {
+        reply('队列为空');
+        return;
+      }
+      reply('已撤回', { tone: 'success', detail: clipOneLine(withdrawn.text) });
+    } catch (error) {
+      reply('撤回失败', { tone: 'error', detail: fact(error) });
+    }
+  }
+
   // /retry：把最近一次失败（或非用户停止的中断）的轮次用原输入重跑。
   //
   // 原文在这里回显成用户行：/retry 不是那条输入本身，readline 没有回显它的机会，
@@ -886,6 +917,9 @@ export function createCommandHandler({
         return 'handled';
       case 'now':
         await runNowCommand();
+        return 'handled';
+      case 'cancel':
+        await runCancelCommand();
         return 'handled';
       case 'rename':
         await runRenameCommand(parsed.args);

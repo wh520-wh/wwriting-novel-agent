@@ -1818,3 +1818,60 @@ test('/rename 与 /archive 进帮助菜单', async () => {
   assert.match(helpText, /\/rename\s+给当前会话起名/);
   assert.match(helpText, /\/archive\s+归档当前会话并开新会话接续/);
 });
+
+// —— /cancel 撤回队首排队输入（规格 2026-10-07 T2）——
+
+test('/cancel：成功撤回队首，详情是原文摘要；队列空与 /now 同句', async () => {
+  const renderer = makeRenderer();
+  const { controller } = makeController({});
+  const withdrawnInputs = [];
+  controller.withdrawQueued = async () => {
+    if (withdrawnInputs.length > 0) return null;
+    withdrawnInputs.push(1);
+    return { input_id: 'q-1', text: '写第三章\n这一行不该出现在详情里' };
+  };
+  const handler = makeHandler({ controller, renderer });
+
+  await handler.handle('/cancel');
+  const first = pick(renderer.calls, 'status').at(-1);
+  assert.equal(first[1], '已撤回');
+  assert.equal(first[2].detail, '写第三章…', '多行原文只留首行加省略号');
+
+  await handler.handle('/cancel');
+  assert.equal(pick(renderer.calls, 'status').at(-1)[1], '队列为空');
+});
+
+test('/cancel：超长原文截 40 字加省略号；控制器抛错收敛成一条事实', async () => {
+  const renderer = makeRenderer();
+  const { controller } = makeController({});
+  let shouldThrow = false;
+  controller.withdrawQueued = async () => {
+    if (shouldThrow) throw new Error('日志写不进去');
+    shouldThrow = true;
+    return { input_id: 'q-2', text: '长'.repeat(50) };
+  };
+  const handler = makeHandler({ controller, renderer });
+
+  await handler.handle('/cancel');
+  const first = pick(renderer.calls, 'status').at(-1);
+  assert.equal(first[1], '已撤回');
+  assert.equal(first[2].detail, `${'长'.repeat(40)}…`);
+
+  renderer.calls.length = 0;
+  await handler.handle('/cancel');
+  const failed = pick(renderer.calls, 'status').at(-1);
+  assert.equal(failed[1], '撤回失败');
+  assert.match(failed[2].detail, /日志写不进去/);
+});
+
+test('/cancel：控制器没有撤回能力时如实说，/cancel 进帮助菜单', async () => {
+  const renderer = makeRenderer();
+  const handler = makeHandler({ renderer, controller: makeController({}).controller });
+  await handler.handle('/cancel');
+  assert.equal(pick(renderer.calls, 'status').at(-1)[1], '暂不支持撤回。');
+
+  renderer.calls.length = 0;
+  await handler.handle('/help');
+  const helpText = pick(renderer.calls, 'status').map((call) => call[1]).join('\n');
+  assert.match(helpText, /\/cancel\s+撤回队首排队输入/);
+});

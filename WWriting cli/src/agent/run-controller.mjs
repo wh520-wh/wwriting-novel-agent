@@ -824,6 +824,19 @@ export function createRunController({
     return { status: 'ok', chars: text.length, turns: uncovered.length };
   }
 
+  // 撤回队首排队输入（/cancel 的落点，规格 2026-10-07 D7）：与 /now 的队首提升对称。
+  // 队列空返回 null（命令层如实说「队列为空」）；撤回走既有 input_withdrawn 事件，
+  // 事件桥的「排队已取消」终态行与实时区整表替换由它直接驱动，这里零渲染职责。
+  async function withdrawQueued() {
+    const handle = requireOpen('撤回排队输入');
+    return serializeWrite(async () => {
+      const head = handle.projection.queue[0];
+      if (!head) return null;
+      await handle.withdraw(head.input_id);
+      return { input_id: head.input_id, text: head.text ?? '' };
+    });
+  }
+
   // 重命名会话（/rename 的落点，规格 2026-10-07 D3）：追加 session_renamed。
   // 只动封面字段，运行中调用安全；写入照走同一条尾链（与循环的 append 共用 state.json.tmp）。
   async function renameSession(title) {
@@ -840,5 +853,5 @@ export function createRunController({
     return { archived: true };
   }
 
-  return { open, submit, submitNow, retry, stop, requestPriority, decide, snapshot, isBusy, activeRunId, readEvents, readTailEvents, compact, renameSession, archive, close, permissions: perm };
+  return { open, submit, submitNow, retry, stop, requestPriority, decide, snapshot, isBusy, activeRunId, readEvents, readTailEvents, compact, withdrawQueued, renameSession, archive, close, permissions: perm };
 }
