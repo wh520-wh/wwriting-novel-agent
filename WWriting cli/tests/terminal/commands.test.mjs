@@ -1875,3 +1875,57 @@ test('/cancel：控制器没有撤回能力时如实说，/cancel 进帮助菜�
   const helpText = pick(renderer.calls, 'status').map((call) => call[1]).join('\n');
   assert.match(helpText, /\/cancel\s+撤回队首排队输入/);
 });
+
+// —— /export 导出对话（规格 2026-10-07 T3）——
+
+test('/export：成功报文件名；0 轮不写文件；忙碌拒绝；失败如实报', async () => {
+  const renderer = makeRenderer();
+  const { controller } = makeController({});
+  controller.isBusy = () => false;
+  let calls = 0;
+  const handler = makeHandler({
+    controller,
+    renderer,
+    exportSession: {
+      write: async () => {
+        calls += 1;
+        if (calls === 1) return { empty: true };
+        if (calls === 2) return { empty: false, name: '对话导出-20261007-153000.md' };
+        throw new Error('磁盘拒绝写入');
+      },
+    },
+  });
+
+  await handler.handle('/export');
+  assert.equal(pick(renderer.calls, 'status').at(-1)[1], '还没有可导出的对话');
+
+  await handler.handle('/export');
+  const ok = pick(renderer.calls, 'status').at(-1);
+  assert.equal(ok[1], '已导出');
+  assert.equal(ok[2].detail, '对话导出-20261007-153000.md');
+
+  renderer.calls.length = 0;
+  controller.isBusy = () => true;
+  await handler.handle('/export');
+  assert.equal(calls, 2, '忙碌时不触发导出');
+  assert.equal(pick(renderer.calls, 'status').at(-1)[1], '运行中');
+
+  renderer.calls.length = 0;
+  controller.isBusy = () => false;
+  await handler.handle('/export');
+  const failed = pick(renderer.calls, 'status').at(-1);
+  assert.equal(failed[1], '导出失败');
+  assert.match(failed[2].detail, /磁盘拒绝写入/);
+});
+
+test('/export：没有导出能力时如实说，/export 进帮助菜单', async () => {
+  const renderer = makeRenderer();
+  const handler = makeHandler({ renderer, controller: makeController({}).controller });
+  await handler.handle('/export');
+  assert.equal(pick(renderer.calls, 'status').at(-1)[1], '暂不支持导出。');
+
+  renderer.calls.length = 0;
+  await handler.handle('/help');
+  const helpText = pick(renderer.calls, 'status').map((call) => call[1]).join('\n');
+  assert.match(helpText, /\/export\s+把本会话全部对话导出为 markdown/);
+});

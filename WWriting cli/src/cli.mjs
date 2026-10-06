@@ -29,6 +29,7 @@ import { createEffortState } from './model/effort.mjs';
 import { createRenderer } from './terminal/renderer.mjs';
 import { createEventRenderer } from './terminal/event-bridge.mjs';
 import { printReplay } from './terminal/replay.mjs';
+import { buildExportMarkdown, writeExportFile } from './terminal/export.mjs';
 import { createInputReader, isInteractiveTerminal, readOneLine } from './terminal/input.mjs';
 // 让位持有计数：嵌套让位（向导期间来确认卡）只在最外层动终端，键不会被两个读取者同时消费。
 import { createInputYielder } from './terminal/input-yield.mjs';
@@ -359,6 +360,29 @@ export async function main(
     await switchSession(created.sessionId);
   }
 
+  // /export 的装配（规格 2026-10-07 D8–D10）：轮次取舍复用 buildReplay，只是不设预算——
+  // 导出是显式动作，要的是全部轮次；落盘写创作目录根（用户显式命令即授权，铁律 8 的
+  // 「私有历史不进创作目录」说的是应用自己默默写盘，不是用户要的导出物）。
+  const exporter = {
+    write: async () => {
+      const snapshot = controller.snapshot();
+      const events = await controller.readEvents();
+      const { items, plan, keptTurns } = buildReplay(events, { budgetChars: Number.MAX_SAFE_INTEGER });
+      if (keptTurns === 0) return { empty: true };
+      const markdown = buildExportMarkdown({
+        items,
+        plan,
+        meta: {
+          sessionId: typeof snapshot?.session_id === 'string' ? snapshot.session_id : null,
+          title: typeof snapshot?.title === 'string' ? snapshot.title : '',
+          exportedAt: new Date(),
+          turns: keptTurns,
+        },
+      });
+      return { empty: false, ...(await writeExportFile({ projectRoot, markdown })) };
+    },
+  };
+
   // 退出信号：/quit 与 Ctrl+C 空闲退出都只 resolve 这一个 promise，主流程在那之后收尾。
   let finish = () => {};
   const done = new Promise((resolve) => {
@@ -463,6 +487,8 @@ export async function main(
     // /archive：归档当前会话 + 开新会话接续（规格 2026-10-07 D4）。归档语义在控制器，
     // 「开新会话」要动 sessionManager 与 switchSession，只有组合根两样都够得着。
     archiveCurrent: () => archiveAndStartNew(),
+    // /export：导出的读写都在组合根——事件要经控制器读，文件要落创作目录。
+    exportSession: exporter,
     // /resume 无参时的会话挑选。与 /model 向导同一套路：选择器要独占按键，
     // 而常驻 readline 会跟着一起吃键，所以先 suspend（关掉它）→ 挑选 → resume（原样建回来）。
     //

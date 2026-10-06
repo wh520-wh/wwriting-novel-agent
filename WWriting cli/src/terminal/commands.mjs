@@ -188,6 +188,7 @@ export function createCommandHandler({
   pick = null,
   skills = null,
   archiveCurrent = null,
+  exportSession = null,
 } = {}) {
   if (typeof getController !== 'function') throw new Error('命令层需要 getController 才能触达同一个 run controller。');
   if (!renderer) throw new Error('命令层需要可用的渲染器。');
@@ -209,6 +210,7 @@ export function createCommandHandler({
   const chooseSession = typeof pickSession === 'function' ? pickSession : null;
   const listSkills = skills !== null && typeof skills.list === 'function' ? skills.list : null;
   const doArchive = typeof archiveCurrent === 'function' ? archiveCurrent : null;
+  const exporter = exportSession !== null && typeof exportSession.write === 'function' ? exportSession : null;
 
   function reply(text, options = {}) {
     renderer.printStatus(text, { final: true, ...options });
@@ -682,6 +684,27 @@ export function createCommandHandler({
     }
   }
 
+  // /export：把全部对话导出为 markdown 写进创作目录根（规格 2026-10-07 T3）。
+  // 忙碌拒绝：导出半轮是假账（与 /compact 同一纪律）；0 轮不写文件，与 /compact 的
+  // empty 态同一句式。成功只报文件名——创作目录就是用户的工作区，路径不必复述。
+  async function runExportCommand() {
+    if (exporter === null) {
+      reply('暂不支持导出。', { tone: 'warn' });
+      return;
+    }
+    if (refuseWhenBusy('导出等这一轮结束后再进行。')) return;
+    try {
+      const result = await exporter.write();
+      if (result?.empty === true) {
+        reply('还没有可导出的对话');
+        return;
+      }
+      reply('已导出', { tone: 'success', detail: result.name });
+    } catch (error) {
+      reply('导出失败', { tone: 'error', detail: fact(error) });
+    }
+  }
+
   // /rename：给当前会话起名（规格 2026-10-07 D3）。无参 = 回显当前标题——
   // 「我起过名字没有」是这条命令最常见的开场，直接答比甩一句用法更有用。
   async function runRenameCommand(args) {
@@ -899,6 +922,9 @@ export function createCommandHandler({
         return 'handled';
       case 'compact':
         await runCompactCommand();
+        return 'handled';
+      case 'export':
+        await runExportCommand();
         return 'handled';
       case 'sessions':
         await runSessionsCommand();
