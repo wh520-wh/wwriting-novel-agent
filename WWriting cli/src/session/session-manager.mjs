@@ -20,6 +20,23 @@ import { projectTurns } from '../agent/history.mjs';
 
 const HANDLE_MARKER = 'wwriting-session-handle';
 
+// 标题长度上限（规格 2026-10-07 D2/D3）：自动 24、手工 64。按码点截，代理对不劈半。
+const AUTO_TITLE_MAX_CHARS = 24;
+const RENAME_TITLE_MAX_CHARS = 64;
+
+// 标题清洗：取首行、trim、内部空白压一。空串返回 ''。
+function cleanTitle(text, maxChars) {
+  const line = String(text).split(/\r?\n/, 1)[0].trim().replace(/\s+/g, ' ');
+  if (line === '') return '';
+  return Array.from(line).slice(0, maxChars).join('');
+}
+
+// 首条输入的自动标题（规格 2026-10-07 D2）：斜杠命令不是对话内容，不拿来起名。
+export function deriveAutoTitle(text) {
+  const line = cleanTitle(text, AUTO_TITLE_MAX_CHARS);
+  return line === '' || line.startsWith('/') ? null : line;
+}
+
 function assertHandle(handle, action) {
   if (!handle || handle.__kind !== HANDLE_MARKER) {
     throw new Error(`执行 ${action} 前需要先通过 openLatest、openById 或 create 打开会话。`);
@@ -114,6 +131,15 @@ export function createSessionManager({
   }
 
   function makeHandle({ sessionId, sessionDir, lock, store, projection }) {
+    // 首条输入自动起标题（规格 2026-10-07 D2）：只在「还没有标题且还没有轮」时生效，
+    // 与输入事件**同一批次**落盘（state.json 只重写一次）；绝不覆盖已有标题——
+    // 手工改的名字与 create 时的命名都不可被输入悄悄顶掉。
+    async function autoTitleEvents(current, text) {
+      if (current.title !== '' || current.turns !== 0) return [];
+      const title = deriveAutoTitle(text);
+      return title === null ? [] : [{ type: 'session_renamed', data: { title } }];
+    }
+
     const handle = {
       __kind: HANDLE_MARKER,
       sessionId,
@@ -140,9 +166,10 @@ export function createSessionManager({
         const busy = current.active_run_id !== null
           || current.active_input_id !== null
           || current.queue.length > 0;
-        await store.append(busy
+        const inputEvent = busy
           ? { type: 'input_queued', data: { input_id: id, text } }
-          : { type: 'input_submitted', data: { input_id: id, text } });
+          : { type: 'input_submitted', data: { input_id: id, text } };
+        await store.appendBatch([...(await autoTitleEvents(current, text)), inputEvent]);
         handle.projection = await store.currentProjection();
         return { input_id: id, queued: busy };
       },
@@ -152,9 +179,25 @@ export function createSessionManager({
           throw new Error('输入内容不能为空。');
         }
         const inputId = String(idFactory());
-        await store.append({ type: 'input_queued', data: { input_id: inputId, text } });
+        const current = await store.currentProjection();
+        // 自动标题对 enqueue 只是形状兜底（忙碌时通常已有轮）；条件不满足时它是空数组。
+        await store.appendBatch([
+          ...(await autoTitleEvents(current, text)),
+          { type: 'input_queued', data: { input_id: inputId, text } },
+        ]);
         handle.projection = await store.currentProjection();
         return { input_id: inputId };
+      },
+      // 重命名会话（/rename 的落点，与自动标题共用同一事件，规格 2026-10-07 D3）。
+      async rename(title) {
+        if (typeof title !== 'string' || title.trim() === '') {
+          throw new Error('会话标题不能为空。');
+        }
+        const clean = cleanTitle(title, RENAME_TITLE_MAX_CHARS);
+        if (clean === '') throw new Error('会话标题不能为空。');
+        await store.append({ type: 'session_renamed', data: { title: clean } });
+        handle.projection = await store.currentProjection();
+        return { title: handle.projection.title };
       },
       // 「立即」：把指定的一个排队输入提升到队首，其余保持 FIFO；实际打断由上层控制器完成。
       async promote(inputId) {
@@ -388,6 +431,10 @@ export function createSessionManager({
     withdraw: async (handle, inputId) => {
       assertHandle(handle, 'withdraw');
       return handle.withdraw(inputId);
+    },
+    rename: async (handle, title) => {
+      assertHandle(handle, 'rename');
+      return handle.rename(title);
     },
     snapshot,
     list,

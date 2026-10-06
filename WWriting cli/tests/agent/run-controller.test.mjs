@@ -55,8 +55,24 @@ function makeGatedStoreFactory() {
   };
   state.factory = (options) => {
     const store = createEventStore(options);
+    const maybeGate = (partials) => {
+      if (Array.isArray(partials) && partials.some((p) => p?.type === 'input_submitted') && gate !== null) {
+        const waiting = gate;
+        gate = null;
+        state.entered = true;
+        return waiting;
+      }
+      return null;
+    };
     return {
       ...store,
+      // 提交路径走 appendBatch（首条输入与自动标题同批次，规格 2026-10-07 D2），
+      // 闸门要卡在批次上；append 的旧拦截保留给直接调 append 的用例。
+      async appendBatch(partials) {
+        const waiting = maybeGate(partials);
+        if (waiting !== null) await waiting;
+        return store.appendBatch(partials);
+      },
       async append(partial) {
         if (partial.type === 'input_submitted' && gate !== null) {
           const waiting = gate;

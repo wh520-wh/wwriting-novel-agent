@@ -64,10 +64,14 @@ export const HELP_COMMANDS = Object.freeze([
   ['/reasoning', '查看上一轮的思考全文'],
   ['/plan', '查看当前任务计划'],
   ['/compact', '把已往对话收敛成摘要，释放上下文'],
+  ['/export', '把本会话全部对话导出为 markdown'],
   ['/sessions', '查看会话列表'],
   ['/skills', '查看已发现的技能'],
   ['/resume', '切换会话：/resume <会话 ID>'],
+  ['/rename', '给当前会话起名：/rename <标题>'],
+  ['/archive', '归档当前会话并开新会话接续'],
   ['/now', '提升队首输入，打断当前这一轮'],
+  ['/cancel', '撤回队首排队输入'],
   ['/stop', '停止当前这一轮'],
   ['/retry', '重跑最近一次失败或中断的轮次'],
   ['/help', '显示本帮助'],
@@ -124,7 +128,10 @@ function formatTime(iso) {
 export function sessionRowLabel(session, { includeId = true } = {}) {
   const status = SESSION_STATUS[session?.status] ?? session?.status ?? '';
   const turns = Number.isFinite(session?.turns) ? `${session.turns} 轮` : '';
-  return [includeId ? session?.session_id : '', formatTime(session?.updated_at), status, turns]
+  // 标题（规格 2026-10-07 D6）：非空时行首——它才是「哪本是哪本书」的第一辨认物；
+  // 为空时该段不存在，行与旧实现逐字一致。
+  const title = typeof session?.title === 'string' && session.title !== '' ? session.title : '';
+  return [title, includeId ? session?.session_id : '', formatTime(session?.updated_at), status, turns]
     .filter((part) => part !== '' && part !== undefined)
     .join('  ');
 }
@@ -170,6 +177,7 @@ export function createCommandHandler({
   permissionMode = null,
   pick = null,
   skills = null,
+  archiveCurrent = null,
 } = {}) {
   if (typeof getController !== 'function') throw new Error('命令层需要 getController 才能触达同一个 run controller。');
   if (!renderer) throw new Error('命令层需要可用的渲染器。');
@@ -190,6 +198,7 @@ export function createCommandHandler({
   const openPicker = typeof pick === 'function' ? pick : null;
   const chooseSession = typeof pickSession === 'function' ? pickSession : null;
   const listSkills = skills !== null && typeof skills.list === 'function' ? skills.list : null;
+  const doArchive = typeof archiveCurrent === 'function' ? archiveCurrent : null;
 
   function reply(text, options = {}) {
     renderer.printStatus(text, { final: true, ...options });
@@ -663,6 +672,46 @@ export function createCommandHandler({
     }
   }
 
+  // /rename：给当前会话起名（规格 2026-10-07 D3）。无参 = 回显当前标题——
+  // 「我起过名字没有」是这条命令最常见的开场，直接答比甩一句用法更有用。
+  async function runRenameCommand(args) {
+    const controller = getController();
+    const title = sanitizeInput(args);
+    if (title === '') {
+      const current = typeof controller.snapshot === 'function' ? controller.snapshot()?.title ?? '' : '';
+      reply(current === '' ? '还没有标题' : current, { tone: 'info', detail: '用法：/rename <标题>' });
+      return;
+    }
+    if (typeof controller.renameSession !== 'function') {
+      reply('暂不支持改名。', { tone: 'warn' });
+      return;
+    }
+    try {
+      const result = await controller.renameSession(title);
+      reply('已重命名', { tone: 'success', detail: result.title });
+    } catch (error) {
+      reply('改名失败', { tone: 'error', detail: fact(error) });
+    }
+  }
+
+  // /archive：归档当前会话并开新会话接续（规格 2026-10-07 D4）。「收起来」与「继续写」
+  // 是一次动作——归档后当前会话不再出现在 -c 与挑选列表里，人却还坐在终端前，
+  // 留在一个已归档的会话里打字只会制造「已归档却还在写」的矛盾状态。
+  // 忙碌拒绝：归档半轮（终态还没落盘）是假账。
+  async function runArchiveCommand() {
+    if (doArchive === null) {
+      reply('暂不支持归档。', { tone: 'warn' });
+      return;
+    }
+    if (refuseWhenBusy('归档等这一轮结束后再进行。')) return;
+    try {
+      await doArchive();
+      reply('已归档', { tone: 'success', detail: '已开新会话接续' });
+    } catch (error) {
+      reply('归档失败', { tone: 'error', detail: fact(error) });
+    }
+  }
+
   // /retry：把最近一次失败（或非用户停止的中断）的轮次用原输入重跑。
   //
   // 原文在这里回显成用户行：/retry 不是那条输入本身，readline 没有回显它的机会，
@@ -837,6 +886,12 @@ export function createCommandHandler({
         return 'handled';
       case 'now':
         await runNowCommand();
+        return 'handled';
+      case 'rename':
+        await runRenameCommand(parsed.args);
+        return 'handled';
+      case 'archive':
+        await runArchiveCommand();
         return 'handled';
       case 'help':
         for (const line of helpLines()) reply(line);

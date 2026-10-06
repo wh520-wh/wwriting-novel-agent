@@ -97,6 +97,11 @@ function applyEvent(state, event) {
     case 'session_archived':
       projection.status = 'archived';
       break;
+    case 'session_renamed':
+      // 标题只认非空字符串（规格 2026-10-07 D1）：清空标题不是一次改名该干的事，
+      // 畸形数据不更新只推进 seq（与 digest_compacted 同纪律）。
+      if (typeof data.title === 'string' && data.title !== '') projection.title = data.title;
+      break;
     case 'input_submitted': {
       state.inputs.set(data.input_id, { input_id: data.input_id, text });
       projection.active_input_id = data.input_id;

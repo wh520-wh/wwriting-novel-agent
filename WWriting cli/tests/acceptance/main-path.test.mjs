@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import { main } from '../../src/cli.mjs';
 import { maskApiKey } from '../../src/model/config.mjs';
+import { HELP_COMMANDS } from '../../src/terminal/commands.mjs';
 import { createSessionManager } from '../../src/session/session-manager.mjs';
 import { createWorkspaceStore, workspaceIdForPath } from '../../src/storage/workspace-store.mjs';
 import { versionLine } from '../../src/version.mjs';
@@ -347,8 +348,9 @@ test('斜杠菜单：打 / 即联想、方向键换高亮、Tab 只补全草稿�
     // 打 `/` 菜单即现（不等回车）：命令按 HELP_COMMANDS 顺序，/init 高亮。
     run.stdin.write('/');
     await waitFor(() => screen().includes('❯ /init'), '菜单出现');
-    // ↓×12：/help 在第 13 项（索引 12），高亮跟手。
-    run.stdin.write('\x1b[B'.repeat(12));
+    // ↓×N：/help 的位置从 HELP_COMMANDS 现算（命令表会长大，写死次数每次加命令都得改这里）。
+    const helpIndex = HELP_COMMANDS.findIndex(([name]) => name === '/help');
+    run.stdin.write('\x1b[B'.repeat(helpIndex));
     await waitFor(() => screen().includes('❯ /help'), '高亮移到 /help');
     // Tab 只补全草稿：/help 进输入框、菜单收起（提示行消失），模型一次都没被打扰。
     run.stdin.write('\t');

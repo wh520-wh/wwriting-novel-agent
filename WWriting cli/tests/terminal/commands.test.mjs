@@ -1714,3 +1714,107 @@ test('/init 草稿按 Ctrl+S 也不走立即——命令草稿与回车完全同
   assert.deepEqual(calls, [['submit', '/init 附带要求'], ['submitNow', '普通正文']],
     '/init 剥掉 immediate；普通正文保留 immediate');
 });
+
+// —— 会话标题与归档（规格 2026-10-07 T1）——
+
+test('sessionRowLabel：标题非空时行首，为空时与旧实现逐字一致', async () => {
+  const { sessionRowLabel } = await import('../../src/terminal/commands.mjs');
+  const base = { session_id: 's-1', updated_at: '2026-10-07T08:30:00', status: 'idle', turns: 3 };
+  assert.equal(
+    sessionRowLabel({ ...base, title: '' }),
+    's-1  2026-10-07 08:30  空闲  3 轮',
+    '无标题：四个字段，与旧行逐字一致',
+  );
+  assert.equal(
+    sessionRowLabel({ ...base, title: '长夜灯' }),
+    '长夜灯  s-1  2026-10-07 08:30  空闲  3 轮',
+    '有标题：标题在最前',
+  );
+});
+
+test('/rename：带参改名，无参回显当前标题', async () => {
+  const renderer = makeRenderer();
+  const renames = [];
+  const { controller } = makeController({
+    snapshotOverride: { status: 'idle', queue: [], session_id: 's-1', title: '旧标题' },
+  });
+  controller.renameSession = async (title) => {
+    renames.push(title);
+    return { title };
+  };
+  const handler = makeHandler({ controller, renderer });
+
+  await handler.handle('/rename 新标题');
+  assert.deepEqual(renames, ['新标题']);
+  assert.equal(pick(renderer.calls, 'status').at(-1)[1], '已重命名');
+  assert.equal(pick(renderer.calls, 'status').at(-1)[2].detail, '新标题');
+
+  // 无参 = 回显当前标题（这里常见的第一问），usage 进 detail。
+  await handler.handle('/rename');
+  const statuses = pick(renderer.calls, 'status').map((call) => call[1]);
+  assert.equal(statuses.at(-1), '旧标题');
+  assert.equal(pick(renderer.calls, 'status').at(-1)[2].detail, '用法：/rename <标题>');
+});
+
+test('/rename：改名失败收敛成一条事实，命令层不抛', async () => {
+  const renderer = makeRenderer();
+  const { controller } = makeController({});
+  controller.renameSession = async () => {
+    throw new Error('磁盘写不进去');
+  };
+  const handler = makeHandler({ controller, renderer });
+  await handler.handle('/rename 新标题');
+  const status = pick(renderer.calls, 'status').at(-1);
+  assert.equal(status[1], '改名失败');
+  assert.match(status[2].detail, /磁盘写不进去/);
+});
+
+test('/archive：成功走注入回调，忙碌拒绝，缺注入如实说', async () => {
+  const renderer = makeRenderer();
+  let archived = 0;
+  const { controller } = makeController({});
+  controller.isBusy = () => false;
+  let handler = makeHandler({ controller, renderer, archiveCurrent: async () => { archived += 1; } });
+  await handler.handle('/archive');
+  assert.equal(archived, 1);
+  const first = pick(renderer.calls, 'status').at(-1);
+  assert.equal(first[1], '已归档');
+  assert.equal(first[2].detail, '已开新会话接续');
+
+  // 忙碌拒绝：归档半轮是假账。
+  renderer.calls.length = 0;
+  controller.isBusy = () => true;
+  await handler.handle('/archive');
+  assert.equal(archived, 1, '忙碌时不执行');
+  assert.equal(pick(renderer.calls, 'status').at(-1)[1], '运行中');
+
+  // 没注入 archiveCurrent（非组合根的裸用）：如实说不可用，不静默。
+  renderer.calls.length = 0;
+  controller.isBusy = () => false;
+  handler = makeHandler({ controller, renderer });
+  await handler.handle('/archive');
+  assert.equal(pick(renderer.calls, 'status').at(-1)[1], '暂不支持归档。');
+});
+
+test('/archive：注入回调抛错收敛成一条事实', async () => {
+  const renderer = makeRenderer();
+  const { controller } = makeController({});
+  const handler = makeHandler({
+    controller,
+    renderer,
+    archiveCurrent: async () => { throw new Error('新会话开不出来'); },
+  });
+  await handler.handle('/archive');
+  const status = pick(renderer.calls, 'status').at(-1);
+  assert.equal(status[1], '归档失败');
+  assert.match(status[2].detail, /新会话开不出来/);
+});
+
+test('/rename 与 /archive 进帮助菜单', async () => {
+  const renderer = makeRenderer();
+  const handler = makeHandler({ renderer, controller: makeController({}).controller });
+  await handler.handle('/help');
+  const helpText = pick(renderer.calls, 'status').map((call) => call[1]).join('\n');
+  assert.match(helpText, /\/rename\s+给当前会话起名/);
+  assert.match(helpText, /\/archive\s+归档当前会话并开新会话接续/);
+});

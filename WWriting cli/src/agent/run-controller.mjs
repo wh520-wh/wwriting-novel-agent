@@ -824,5 +824,21 @@ export function createRunController({
     return { status: 'ok', chars: text.length, turns: uncovered.length };
   }
 
-  return { open, submit, submitNow, retry, stop, requestPriority, decide, snapshot, isBusy, activeRunId, readEvents, readTailEvents, compact, close, permissions: perm };
+  // 重命名会话（/rename 的落点，规格 2026-10-07 D3）：追加 session_renamed。
+  // 只动封面字段，运行中调用安全；写入照走同一条尾链（与循环的 append 共用 state.json.tmp）。
+  async function renameSession(title) {
+    const handle = requireOpen('重命名会话');
+    return serializeWrite(() => handle.rename(title));
+  }
+
+  // 归档会话（/archive 的第一半，规格 2026-10-07 D4）：追加 session_archived，
+  // 投影 status 翻为 archived。「开新会话接续」由组合根负责——它才持有 sessionManager。
+  async function archive() {
+    const handle = requireOpen('归档会话');
+    await serializeWrite(() => handle.append({ type: 'session_archived' }));
+    await serializeWrite(() => handle.refresh());
+    return { archived: true };
+  }
+
+  return { open, submit, submitNow, retry, stop, requestPriority, decide, snapshot, isBusy, activeRunId, readEvents, readTailEvents, compact, renameSession, archive, close, permissions: perm };
 }

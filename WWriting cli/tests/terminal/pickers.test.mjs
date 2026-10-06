@@ -63,8 +63,8 @@ test('pick：构造缺件直接报错，不带病上岗', () => {
   assert.throws(() => createMenuPicker({ selector: { ask: async () => null } }));
 });
 
-function session(id, turns, { updated = '2026-09-30T10:00:00.000Z', status = 'idle' } = {}) {
-  return { session_id: id, turns, status, updated_at: updated, title: `会话 ${id}` };
+function session(id, turns, { updated = '2026-09-30T10:00:00.000Z', status = 'idle', title = '书名' } = {}) {
+  return { session_id: id, turns, status, updated_at: updated, title };
 }
 
 test('sessionPickerItems：0 轮空壳不进挑选列表，除非它就是当前会话（P23）', () => {
@@ -78,10 +78,12 @@ test('sessionPickerItems：0 轮空壳不进挑选列表，除非它就是当前
     '别的 0 轮壳被滤掉（保持列表原有顺序）；当前会话即使是壳也留下（用户正站在它上面）');
 });
 
-test('sessionPickerItems：带轮数的归档会话保留（与既有 /resume 行为一致），行标签说得出「已归档」', () => {
+test('sessionPickerItems：已归档会话不进挑选列表（规格 2026-10-07 D5 改判旧行为）', () => {
+  // 旧行为是「带轮数的归档会话保留」；/archive（D4）落地后归档就是「收起来」，
+  // 挑选列表是「接着写」的入口，已归档不再出现。/sessions（查看）仍列它，
+  // 行标签的「已归档」读法由 commands.test.mjs 的 sessionRowLabel 用例钉住。
   const items = sessionPickerItems([session('已归档', 5, { status: 'archived' })], null);
-  assert.deepEqual(items.map((item) => item.id), ['已归档']);
-  assert.match(items[0].label, /已归档/);
+  assert.deepEqual(items.map((item) => item.id), []);
 });
 
 test('sessionPickerItems：当前会话标「（当前）」，说明行是会话 ID，行标签不带原始 ID', () => {
@@ -101,4 +103,15 @@ test('sessionPickerItems：与 /sessions 共用同一份行标签（时间 / 状
 test('sessionPickerItems：空列表与空当前会话都安全', () => {
   assert.deepEqual(sessionPickerItems([], null), []);
   assert.deepEqual(sessionPickerItems([session('壳', 0)], null), [], '全部是壳：列表为空（命令层退回提示）');
+});
+
+test('sessionPickerItems：当前会话即使已归档也保留并标「（当前）」', () => {
+  const sessions = [
+    { session_id: 'a', turns: 3, status: 'archived', updated_at: '2026-10-07T08:00:00', title: '刚归档' },
+    { session_id: 'b', turns: 5, status: 'idle', updated_at: '2026-10-07T09:00:00', title: '在写' },
+  ];
+  // 刚 /archive 切走的瞬间它还在屏幕上，列表里要能对上号。
+  const items = sessionPickerItems(sessions, 'a');
+  assert.deepEqual(items.map((item) => item.id), ['a', 'b']);
+  assert.match(items[0].label, /（当前）/);
 });

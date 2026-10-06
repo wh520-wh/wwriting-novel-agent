@@ -44,9 +44,12 @@ export function createMenuPicker({ selector, withInputSuspended } = {}) {
 // 否则用久了列表里全是「0 轮」的噪音，真正有内容的会话反而难找。它仍然在 /sessions 里可见
 // （那条命令是「查看」，不是「挑选」），也仍然能用 --resume <ID> 打开，
 // 所以这不是丢数据，只是不把噪音推到用户面前。
+// 已归档的会话同理（规格 2026-10-07 D5）：归档就是「收起来」，挑选列表是「接着写」的入口；
+// 当前会话即使已归档也保留（刚 /archive 切走的瞬间它还在屏幕上）。
 export function sessionPickerItems(sessions, currentId = null) {
   return (Array.isArray(sessions) ? sessions : [])
-    .filter((session) => (session.session_id === currentId || (session.turns ?? 0) > 0))
+    .filter((session) => session.session_id === currentId
+      || ((session.turns ?? 0) > 0 && session.status !== 'archived'))
     .map((session) => ({
       id: session.session_id,
       label: `${sessionRowLabel(session, { includeId: false })}${session.session_id === currentId ? '  （当前）' : ''}`,

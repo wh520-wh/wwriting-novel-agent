@@ -181,7 +181,8 @@ test('重启恢复：state.json 损坏与未闭合 Run 一次修复到位', asyn
   const reopened = await manager.openById(projectRoot, sessionId);
   try {
     assert.equal(reopened.projection.status, 'interrupted');
-    assert.equal(reopened.projection.last_seq, 5); // 3 个原始事件 + run_interrupted + session_recovered
+    // 4 个原始事件（首条输入与自动标题同批次，规格 2026-10-07 D2）+ run_interrupted + session_recovered
+    assert.equal(reopened.projection.last_seq, 6);
     const state = JSON.parse(await fs.readFile(path.join(reopened.directory, 'state.json'), 'utf8'));
     assert.equal(state.status, 'interrupted');
     assert.equal(state.last_seq, reopened.projection.last_seq);
@@ -202,18 +203,19 @@ test('重启恢复：截断尾行与未闭合 Run 同时出现时恢复事实完
   await session.close();
 
   // 崩溃时正在写入的下一行只留下一半。
-  await fs.appendFile(path.join(session.directory, 'events.jsonl'), '{"schema_version":1,"seq":4,"type":"run_sta', 'utf8');
+  // 崩溃时正在写入的下一行只留下一半（首条输入与自动标题同批次后，真实下一个 seq 是 5）。
+  await fs.appendFile(path.join(session.directory, 'events.jsonl'), '{"schema_version":1,"seq":5,"type":"run_sta', 'utf8');
 
   const reopened = await manager.openById(projectRoot, sessionId);
   try {
     const { events } = await reopened.eventStore.readAll();
-    assert.equal(events[3].type, 'log_tail_truncated');
-    assert.equal(events[3].seq, 4);
+    assert.equal(events[4].type, 'log_tail_truncated');
+    assert.equal(events[4].seq, 5);
 
     const recoveredEvent = events.find((event) => event.type === 'session_recovered');
     assert.equal(recoveredEvent.data.truncated_tail, true);
     assert.equal(reopened.projection.status, 'interrupted');
-    assert.equal(reopened.projection.last_seq, 6); // 截断恢复 + run_interrupted + session_recovered
+    assert.equal(reopened.projection.last_seq, 7); // 截断恢复 + run_interrupted + session_recovered
   } finally {
     await reopened.close();
   }

@@ -349,6 +349,16 @@ export async function main(
     renderer.setLivePlan(Array.isArray(plan?.items) ? plan.items : null, { active: false });
   }
 
+  // /archive 的「归档 + 开新会话接续」（规格 2026-10-07 D4）：归档事件记在当前会话，
+  // 然后按裸启动的同一套（create → close → openController）换到全新会话。
+  // 先归档后切换：切换失败时旧会话已带归档标记，重试 /archive 不会重复归档（事件幂等）。
+  async function archiveAndStartNew() {
+    await controller.archive();
+    const created = await sessionManager.create(projectRoot);
+    await created.close();
+    await switchSession(created.sessionId);
+  }
+
   // 退出信号：/quit 与 Ctrl+C 空闲退出都只 resolve 这一个 promise，主流程在那之后收尾。
   let finish = () => {};
   const done = new Promise((resolve) => {
@@ -450,6 +460,9 @@ export async function main(
     listSessions: () => sessionManager.list(projectRoot),
     skills: { list: () => skillService.catalog({ projectRoot }) },
     resumeSession: (sessionId) => switchSession(sessionId),
+    // /archive：归档当前会话 + 开新会话接续（规格 2026-10-07 D4）。归档语义在控制器，
+    // 「开新会话」要动 sessionManager 与 switchSession，只有组合根两样都够得着。
+    archiveCurrent: () => archiveAndStartNew(),
     // /resume 无参时的会话挑选。与 /model 向导同一套路：选择器要独占按键，
     // 而常驻 readline 会跟着一起吃键，所以先 suspend（关掉它）→ 挑选 → resume（原样建回来）。
     //
