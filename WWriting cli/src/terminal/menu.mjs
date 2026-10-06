@@ -43,3 +43,40 @@ export function cycleIndex(selected, delta, total) {
 // 菜单底部固定一行的按键提示（选择器 DEFAULT_HINT 家族形态）。计入菜单封顶行数；
 // 菜单态的回车 = 提交原文，与全 app 五处选择器的「回车确认」相反——这行必须说清。
 export const MENU_HINT = '↑/↓ 选择 · Tab 补全 · Esc 收起';
+
+// —— 历史搜索菜单（输入态变体之二，规格 2026-10-07 D13-D14）——
+//
+// 与斜杠菜单共用渲染槽与按键纪律，但语义有两处**有意不同**：
+//   - 触发是显式的（Ctrl+R），查询 = 当前草稿整行；斜杠菜单是行首判据自动触发。
+//   - 回车 = 补全进草稿、**不提交**（误回车重发一整段旧输入比多按一次回车危险得多），
+//     提示行因此单独一份，把这件事说清。
+// entries 契约：**最新在前**（与 readline 的 history 数组同向，调用方反转一次）。
+export const HISTORY_MENU_HINT = '↑/↓ 选择 · Tab/回车 补全 · Esc 收起';
+
+// 多行原文 → 单行显示名：首行 + 省略号。宽度裁剪归渲染层，这里只管「多行要说一声」。
+export function historyDisplayName(text) {
+  const raw = typeof text === 'string' ? text : '';
+  const lines = raw.split(/\r?\n/);
+  const firstLine = (lines[0] ?? '').trim().replace(/\s+/g, ' ');
+  const truncated = lines.some((line, index) => index > 0 && line.trim() !== '');
+  return `${firstLine}${truncated ? '…' : ''}`;
+}
+
+export function historyMenu({ query, entries, selected = 0 } = {}) {
+  const needle = typeof query === 'string' ? query.toLowerCase() : '';
+  const list = Array.isArray(entries) ? entries : [];
+  const matches = list
+    .filter((entry) => typeof entry === 'string' && entry !== '')
+    .filter((entry) => needle === '' || entry.toLowerCase().includes(needle))
+    .map((text) => ({ text, name: historyDisplayName(text), description: '' }));
+  const open = matches.length > 0;
+  const index = open ? cycleIndex(selected, 0, matches.length) : 0;
+  return {
+    open,
+    matches,
+    index,
+    // 补全给的是**全文原文**（多行也是原文进草稿），不是显示名。
+    completion: open ? matches[index].text : null,
+    hint: HISTORY_MENU_HINT,
+  };
+}

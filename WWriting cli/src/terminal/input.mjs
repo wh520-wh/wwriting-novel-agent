@@ -35,7 +35,7 @@ import {
   USER_MARK, paintText, resolveColor,
 } from './style.mjs';
 import { displayWidth, resolveColumns, clipToWidth, fullWidthRuleLine, fullWidthRuleParts } from './metrics.mjs';
-import { MENU_HINT, cycleIndex, slashMenu } from './menu.mjs';
+import { MENU_HINT, HISTORY_MENU_HINT, cycleIndex, historyMenu, slashMenu } from './menu.mjs';
 
 // 提示符与用户行标记是同一个字符（renderer 的 USER_MARK），屏幕上「❯ 开头」永远是用户说的。
 // 有颜色时用它上色：提示符是这条对话面上最需要一眼认出的东西。
@@ -127,7 +127,10 @@ export async function readOneLine({
 //                                  immediate=true 表示这次提交来自 Ctrl+S（「立即」语义在
 //                                  控制器，输入层只负责把标记原样交出去）
 //   onControl(name)    'interrupt'（Ctrl+C）| 'eof'（输入结束）| 'mode-cycle'（Shift+Tab）
-// 返回 { start, stop, suspend, resume, composer }。
+//   history            输入历史，**最新在前**（规格 2026-10-07 D12-D13）：既播种 readline
+//                      的 ↑（historySize 100），也是 Ctrl+R 历史搜索菜单的数据源；
+//                      本会话内的新提交也会从头部进入（相邻去重，与 readline 同纪律）。
+// 返回 { start, stop, suspend, resume, composer, replaceDraft }。
 //   start({ initialText }) 返回 { interactive, reason }；initialText 会像用户亲手敲的一样
 //   填进输入框并提交（位置参数那条路用它，屏幕上因此也是同一个框）。
 //   suspend/resume 用来把终端临时交给交互式命令（`/model` 向导、权限确认卡），用完原样接回来；
@@ -141,6 +144,7 @@ export function createInputReader({
   onControl = null,
   prompt = null,
   menuCommands = [],
+  history = [],
 } = {}) {
   const noticeTarget = stderr ?? stdout;
   // 颜色判据与渲染器共用同一份（NO_COLOR 一律不上色），算一次就够。
@@ -169,6 +173,14 @@ export function createInputReader({
   let menuSelected = 0;
   let menuDismissed = false;
   let menuLineSeen = null;
+  // 菜单模式（规格 2026-10-07 D13/D18）：null = 按行内容自动（斜杠命令位）；
+  // 'history' = Ctrl+R 显式进入的历史搜索，期间斜杠菜单抑制，Esc 退出（不带回）。
+  // menuKind 记当前菜单帧属于哪个内核，拦截层据此取补全语义。
+  let menuMode = null;
+  let menuKind = null;
+  // 历史搜索的高亮位与数据源（最新在前）。提交过的新条目也从头部进入。
+  let historySelected = 0;
+  const historyEntries = Array.isArray(history) ? [...history] : [];
   // suspend 前带走的半行草稿（缺陷猎捕报告 3）。suspend 会真的关掉 readline：
   // 已键入的半行既不在缓冲也不在历史里，不显式承接就是无声销毁——屏幕上和缓冲里双双消失。
   // 恢复时原样写回（含光标位置）。带控制字符的半行不接（会被 readline 当按键解释）；
@@ -371,8 +383,35 @@ export function createInputReader({
     const isMetaDebris = (key) => key && key.meta === true && key.ctrl !== true
       && typeof key.name === 'string'
       && (key.name.length === 1 || META_DEBRIS_NAMES.has(key.name));
+    // 历史搜索的三步退出（补全进草稿 / Esc）：退出搜索模式、按当前行解封菜单重算。
+    const exitHistoryMode = (filledLine) => {
+      menuMode = null;
+      menuKind = null;
+      historySelected = 0;
+      menuDismissed = true;
+      menuLineSeen = typeof filledLine === 'string' ? filledLine : null;
+    };
     const handleKey = (s, key) => {
-      // —— 先于 readline 消费的拦截（Shift+Tab / Ctrl+S / 菜单态按键 / Tab）——
+      // —— 先于 readline 消费的拦截（Ctrl+R / Shift+Tab / Ctrl+S / 菜单态按键 / Tab）——
+      if (key && key.ctrl === true && key.name === 'r') {
+        // Ctrl+R（\x12，readline 自己的 reverse-i-search 必须被拦在前头）：
+        // 搜索模式已开且菜单在场 = 选中下一条（经典肌肉记忆）；否则打开搜索（D13）。
+        if (menuMode === 'history' && menuOpen()) {
+          const state = menuStateFor(rl.line);
+          if (state.open) {
+            historySelected = cycleIndex(state.index, 1, state.matches.length);
+            menuText = renderMenu({ ...state, index: historySelected });
+            if (areaDrawn) drawArea();
+          }
+          return;
+        }
+        menuMode = 'history';
+        menuDismissed = false;
+        menuLineSeen = null;
+        historySelected = 0;
+        refreshMenu();
+        return;
+      }
       if (key && key.name === 'tab' && key.shift === true) {
         emitControl('mode-cycle');
         return;
@@ -383,31 +422,55 @@ export function createInputReader({
       }
       if (key && menuOpen() && (key.name === 'up' || key.name === 'down')) {
         // 菜单态方向键 = 移动高亮（循环），绝不翻历史；不交给 readline。
-        const state = slashMenu({ line: rl.line, commands: menuCommands, selected: menuSelected });
+        const state = menuStateFor(rl.line);
         if (state.open) {
-          menuSelected = cycleIndex(state.index, key.name === 'up' ? -1 : 1, state.matches.length);
-          menuText = renderMenu({ ...state, index: menuSelected });
+          const index = cycleIndex(state.index, key.name === 'up' ? -1 : 1, state.matches.length);
+          if (menuMode === 'history') historySelected = index;
+          else menuSelected = index;
+          menuText = renderMenu({ ...state, index });
           if (areaDrawn) drawArea();
           return;
         }
       }
       if (key && menuOpen() && key.name === 'escape') {
+        if (menuMode === 'history') {
+          // 历史搜索的 Esc = 退出搜索模式本身（D13，不带回）；草稿原样保留，
+          // 菜单按「行内容一变即重开」的同一纪律解封。
+          exitHistoryMode(rl.line);
+          refreshMenu();
+          return;
+        }
         // Esc = 收起菜单；行内容一变即重开（refreshMenu 的解封纪律）。
         menuDismissed = true;
         refreshMenu();
         return;
       }
       if (key && key.name === 'tab' && key.shift !== true) {
-        // Tab：菜单开着 = 补全高亮项（补全后带尾空格，token 结束菜单随之收起）；
-        // 菜单关着 = 吞掉（保持「普通文本里 Tab 无操作」，也绝不让字面 \t 进草稿）。
+        // Tab：菜单开着 = 补全高亮项（斜杠补全带尾空格，token 结束菜单随之收起；
+        // 历史补全是全文进草稿并退出搜索模式）；菜单关着 = 吞掉（保持「普通文本里
+        // Tab 无操作」，也绝不让字面 \t 进草稿）。
         if (menuOpen()) {
-          const state = slashMenu({ line: rl.line, commands: menuCommands, selected: menuSelected });
+          const state = menuStateFor(rl.line);
           if (state.open && typeof state.completion === 'string') {
+            if (menuMode === 'history') exitHistoryMode(state.completion);
             rl.line = state.completion;
             rl.cursor = rl.line.length;
             refreshLine();
             refreshMenu();
           }
+        }
+        return;
+      }
+      if (key && menuMode === 'history' && menuOpen() && (key.name === 'return' || key.name === 'enter')) {
+        // 历史搜索态的回车 = 补全进草稿、**不提交**（D13 的有意偏差，提示行写明）。
+        // 菜单没开（查询无命中）时不拦：回车照常提交，那是唯一的自然出口。
+        const state = menuStateFor(rl.line);
+        if (state.open && typeof state.completion === 'string') {
+          exitHistoryMode(state.completion);
+          rl.line = state.completion;
+          rl.cursor = rl.line.length;
+          refreshLine();
+          refreshMenu();
         }
         return;
       }
@@ -443,6 +506,13 @@ export function createInputReader({
       promptOnce();
       return;
     }
+    // 提交过的新条目进搜索源（相邻去重，与 readline 自己的 history 纪律一致）：
+    // Ctrl+R 在本会话内就能搜到刚发过的原文，不必等重启。
+    if (historyEntries[0] !== text) historyEntries.unshift(text);
+    // 提交即退出历史搜索模式（若还在）：提交的是草稿本身，搜索态不该跨轮残留。
+    menuMode = null;
+    menuKind = null;
+    historySelected = 0;
     // 走出框的下沿，之后的输出从这条线下面开始（屏幕上一个空行都不用留）。
     if (hadBox) writeOut('\n');
     if (typeof onSubmit === 'function') onSubmit(text, { immediate });
@@ -483,7 +553,7 @@ export function createInputReader({
     // 块顶行被推进 scrollback（复查确立）。兜底 3 行保证菜单在矮终端仍可用。
     const maxRows = Math.max(3, totalRows - 6 - liveRows(liveText));
     const room = Math.max(1, maxRows - 1); // 提示行固定占一行
-    const { matches, index } = state;
+    const { matches, index, hint } = state;
     let start = 0;
     if (matches.length > room) start = Math.max(0, Math.min(index - (room >> 1), matches.length - room));
     // 说明列对齐（与 /help 的两栏同一版式）：名字补齐到清单里最宽的再加 3 格。
@@ -505,7 +575,7 @@ export function createInputReader({
       const tone = selected ? 'accent' : 'info';
       rows.push(`${paintText(`${mark}${name}${gap}`, tone, useColor)}${desc === '' ? '' : paintText(desc, tone, useColor)}`);
     }
-    rows.push(paintText(clipToWidth(MENU_HINT, width), 'info', useColor));
+    rows.push(paintText(clipToWidth(hint ?? MENU_HINT, width), 'info', useColor));
     return rows.join('\n');
   }
 
@@ -513,15 +583,23 @@ export function createInputReader({
   // 内容没变就不动屏幕；变了整块重画（drawArea 的擦除按 paintedMenuRows 旧高走）。
   // Esc 收起（menuDismissed）在行内容一变时解封；非交互 / 没配清单时不启用；
   // 让位期间 areaDrawn 为假，只记账不画屏。
+  // 历史搜索模式（menuMode === 'history'）压过斜杠判据——搜索草稿以 / 开头时
+  // 绝不能闪回命令菜单（D18 的优先级：显式进入 > 自动判据）。
   function refreshMenu() {
-    if (rl === null || !interactive || menuCommands.length === 0) return;
+    if (rl === null || !interactive) return;
     const line = typeof rl.line === 'string' ? rl.line : '';
     if (line !== menuLineSeen) {
       menuLineSeen = line;
       menuDismissed = false;
     }
-    const state = slashMenu({ line, commands: menuCommands, selected: menuSelected });
-    menuSelected = state.index;
+    const state = menuStateFor(line);
+    if (menuMode === 'history') {
+      historySelected = state.index;
+      menuKind = state.open ? 'history' : null;
+    } else {
+      menuSelected = state.index;
+      menuKind = state.open ? 'slash' : null;
+    }
     const next = state.open && !menuDismissed ? renderMenu(state) : null;
     if (next === menuText) return;
     menuText = next;
@@ -531,6 +609,12 @@ export function createInputReader({
   // 菜单此刻开没开（拦截层用）：以屏幕上那一帧为准——refreshMenu 在每次按键后都会刷新它。
   const menuOpen = () => menuText !== null;
 
+  // 当前菜单态的内核状态（规格 2026-10-07 D18）：历史搜索显式进入时压过斜杠判据；
+  // 否则按行内容自动（斜杠命令位，T5 将在此并入 @ 文件判据）。
+  const menuStateFor = (line) => (menuMode === 'history'
+    ? historyMenu({ query: line, entries: historyEntries, selected: historySelected })
+    : slashMenu({ line, commands: menuCommands, selected: menuSelected }));
+
   // 菜单不进历史：回车接受 / Ctrl+S 交出草稿**之前**把菜单行从屏幕上清成空行。
   // 必须在行模型还有效的时刻调用（两处调用点都在拦截层，几何此刻算得准）。
   // inline 渲染抹不掉 scrollback 的行，只能清空它们——空行落在实时区与用户行之间。
@@ -539,6 +623,9 @@ export function createInputReader({
     menuText = null;
     menuSelected = 0;
     paintedMenuRows = 0;
+    menuMode = null;
+    menuKind = null;
+    historySelected = 0;
     if (rows === 0 || !areaDrawn || rl === null) return;
     const { cursorRow } = inputLayout();
     // 上移到菜单顶：光标行 → 输入块顶（cursorRow − 1）→ 越过顶框线（1）→ 菜单 rows 行。
@@ -614,6 +701,10 @@ export function createInputReader({
       // 吞掉、Esc 与方向键被合并成无效序列——菜单把 Esc 变成常用键之后不可接受。
       // 50ms 内完整序列（方向键等）单次写入到达，不受影响。
       escapeCodeTimeout: 50,
+      // 输入历史播种（规格 2026-10-07 D12）：readline 的 history 数组索引 0 = 最新
+      // （新条目 unshift 到头部，实证见 tests/terminal/input.test.mjs）——seed 契约同向。
+      history: interactive ? historyEntries.slice(0, 100) : [],
+      historySize: 100,
     });
     attachAreaHooks(rl);
     attachKeysHook(rl);
@@ -690,6 +781,9 @@ export function createInputReader({
     paintedMenuRows = 0;
     menuDismissed = false;
     menuLineSeen = null;
+    menuMode = null;
+    menuKind = null;
+    historySelected = 0;
     rl = null;
     interactive = false;
     liveText = null;

@@ -1264,3 +1264,135 @@ test('让位前按过 Esc：恢复后菜单仍按草稿重建（收起标记随�
     reader.stop();
   }
 });
+
+// —— 输入历史与 Ctrl+R 搜索（规格 2026-10-07 T4/D12-D13）——
+
+test('Ctrl+R 打开历史搜索：最新在前、Tab 补全进草稿不提交、再按回车才提交', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const submitted = [];
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' },
+    menuCommands: [{ name: '/model', description: '设置模型' }],
+    history: ['写第三章', '写第一章'],
+    onSubmit: (text) => submitted.push(text) });
+  reader.start();
+  try {
+    stdin.write('\x12');
+    await tick();
+    let screen = screenText(stdout.text());
+    assert.ok(screen.includes('❯ 写第三章'), '最新一条高亮（entries 最新在前）');
+    assert.ok(screen.includes('Tab/回车 补全'), '历史菜单用自己的提示行');
+
+    stdin.write('\t');
+    await tick();
+    screen = screenText(stdout.text());
+    assert.ok(screen.includes('❯ 写第三章'), '补全写进输入行');
+    assert.equal(screen.includes('↑/↓ 选择'), false, '补全后菜单收起');
+    assert.deepEqual(submitted, [], '补全不是提交');
+
+    stdin.write('\r');
+    await tick();
+    assert.deepEqual(submitted, ['写第三章'], '提交要再按一次回车');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('Ctrl+R 以草稿整行为查询：命中过滤、历史态回车只补全不提交', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const submitted = [];
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' },
+    history: ['写第三章', 'REVIEW 第2章', '写第一章'],
+    onSubmit: (text) => submitted.push(text) });
+  reader.start();
+  try {
+    stdin.write('第2');
+    await tick();
+    stdin.write('\x12');
+    await tick();
+    let screen = screenText(stdout.text());
+    assert.ok(screen.includes('REVIEW 第2章'), '按查询过滤（子串）');
+    assert.equal(screen.includes('写第一章'), false, '不命中的不列');
+
+    stdin.write('\r');
+    await tick();
+    screen = screenText(stdout.text());
+    assert.deepEqual(submitted, [], '历史搜索态的回车绝不提交');
+    assert.ok(screen.includes('❯ REVIEW 第2章'), '回车把命中项补进草稿');
+
+    stdin.write('\r');
+    await tick();
+    assert.deepEqual(submitted, ['REVIEW 第2章'], '补全之后的回车才是提交');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('历史搜索期间斜杠菜单被抑制：Esc 退出后行一变才回到命令菜单', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' },
+    menuCommands: [{ name: '/model', description: '设置模型' }],
+    history: ['/model 的用法笔记'] });
+  reader.start();
+  try {
+    stdin.write('/mo');
+    await tick();
+    let screen = screenText(stdout.text());
+    assert.ok(screen.includes('设置模型'), '前置：命令位置开的是斜杠菜单');
+
+    stdin.write('\x12');
+    await tick();
+    screen = screenText(stdout.text());
+    assert.ok(screen.includes('/model 的用法笔记'), '历史搜索压过斜杠菜单（D18）');
+    assert.equal(screen.includes('设置模型'), false, '命令菜单说明不出现');
+
+    stdin.write('\x1b');
+    // Esc 是单字节转义：要等 escapeCodeTimeout（50ms）归一成 escape 键，单次 tick 不够。
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    screen = screenText(stdout.text());
+    assert.equal(screen.includes('↑/↓ 选择'), false, 'Esc 退出搜索模式，菜单收起');
+    assert.ok(screen.includes('/mo'), '草稿原样保留');
+
+    stdin.write('d');
+    await tick();
+    screen = screenText(stdout.text());
+    assert.ok(screen.includes('设置模型'), '行一变，斜杠菜单按自动判据重开');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('启动播种：↑ 翻出跨进程历史（readline history，最新在前）', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' }, history: ['旧输入甲', '旧输入乙'] });
+  reader.start();
+  try {
+    stdin.write('\x1b[A');
+    await tick();
+    assert.ok(screenText(stdout.text()).includes('旧输入甲'), '第一条 ↑ 到最新一条');
+    stdin.write('\x1b[A');
+    await tick();
+    assert.ok(screenText(stdout.text()).includes('旧输入乙'), '再 ↑ 到更早一条');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('本会话提交过的原文立即可搜（提交入口进搜索源，相邻去重）', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' }, history: [] });
+  reader.start();
+  try {
+    stdin.write('刚发的一句话\r');
+    await tick();
+    stdin.write('\x12');
+    await tick();
+    assert.ok(screenText(stdout.text()).includes('刚发的一句话'), '不用等重启就能搜到');
+  } finally {
+    reader.stop();
+  }
+});

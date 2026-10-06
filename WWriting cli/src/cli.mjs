@@ -10,11 +10,13 @@
 //      会擦掉用户正在键入的内容（D19）；
 //   3) 启动错误收敛：打开会话 / 模型请求 / 用户拒绝等故障各映射为「一条中文事实」。
 import { pathToFileURL } from 'node:url';
+import path from 'node:path';
 
 import { ArgsError, USAGE_TEXT, parseArgs } from './cli/args.mjs';
 import { fact } from './fact.mjs';
 import { versionLine } from './version.mjs';
 import { createWorkspaceStore, resolveAppDataRoot } from './storage/workspace-store.mjs';
+import { loadInputHistory, recordInput } from './storage/input-history.mjs';
 import { createSessionManager } from './session/session-manager.mjs';
 import { createEventStore } from './session/event-store.mjs';
 import { createRunController } from './agent/run-controller.mjs';
@@ -108,6 +110,20 @@ export async function main(
   // 在组合根之前算一次，往下所有用点都是同一份。
   const interactive = isInteractiveTerminal({ stdin: io.stdin, stdout: io.stdout, env: io.env });
 
+  // 工作区私有存储提前建（纯构造，无 I/O）：输入历史文件路径要靠它算。
+  const workspaceStore = createWorkspaceStore({ appDataRoot: resolveAppDataRoot(io.env) });
+
+  // 输入历史（规格 2026-10-07 T4/D11-D12）：每个创作目录一份，存在应用私有工作区里。
+  // 启动加载播种（↑ 与 Ctrl+R 的数据源），提交入口记录；命令与正文都算输入。
+  // 读不出按空历史降级，写失败静默——历史是增强，不值得让对话面为它分心。
+  const inputHistoryFile = path.join(workspaceStore.directoryFor(projectRoot, 'workspace'), 'input-history.jsonl');
+  const seedHistory = await loadInputHistory({ file: inputHistoryFile });
+  let lastRecordedInput = null;
+  async function recordInputHistory(text) {
+    const recorded = await recordInput({ file: inputHistoryFile, text, previous: lastRecordedInput });
+    if (recorded) lastRecordedInput = text;
+  }
+
   // —— 组合根 ——
   // 输入读取器先建：渲染器要拿它暴露的 composer 钩子与 readline 的行缓冲协作。
   // onSubmit / onControl 只捕获下面那个 handler 常量；handler 在 start() 之前完成赋值，
@@ -120,10 +136,16 @@ export async function main(
     commands: HELP_COMMANDS.map(([name]) => name),
     // 联想菜单的数据源（工单 05）：与 /help 同一张表连中文说明一起传，两处文案不分叉。
     menuCommands: HELP_COMMANDS.map(([name, description]) => ({ name, description })),
+    // 输入历史（规格 2026-10-07 D12）：加载的是 oldest→newest，输入层契约要最新在前。
+    history: [...seedHistory].reverse(),
     // 不 await：controller.submit() 会等到本轮 + 队列 drain 结束，await 会把输入框堵死（D15）。
     // immediate（Ctrl+S）原样透传：命令草稿与回车完全同路，「立即」只作用于普通正文。
     // 裸 `/` 由输入层丢弃（工单 06）：弹窗退役后，「空 / + 回车」不再有任何动作。
-    onSubmit: (text, { immediate = false } = {}) => { void handler.handle(text, { immediate }); },
+    // 提交入口顺手记历史（D11）：命令、正文、立即提交都算输入，空行到不了这里。
+    onSubmit: (text, { immediate = false } = {}) => {
+      void recordInputHistory(text);
+      void handler.handle(text, { immediate });
+    },
     onControl: (name) => { void handler.handleControl(name); },
   });
 
@@ -170,7 +192,6 @@ export async function main(
     : null;
 
   const bridge = createEventRenderer({ renderer, onDecision });
-  const workspaceStore = createWorkspaceStore({ appDataRoot: resolveAppDataRoot(io.env) });
   const sessionManager = createSessionManager({
     workspaceStore,
     eventStoreFactory: bridge.wrapEventStoreFactory((options) => createEventStore(options)),

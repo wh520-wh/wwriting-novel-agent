@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { cycleIndex, slashMenu } from '../../src/terminal/menu.mjs';
+import { cycleIndex, historyMenu, slashMenu } from '../../src/terminal/menu.mjs';
 import { parseSlashCommand } from '../../src/terminal/commands.mjs';
 
 const COMMANDS = Object.freeze([
@@ -75,4 +75,37 @@ test('子集不变性：菜单打开的行解析器必定认账，正文斜杠�
   // 菜单不开的行，解析器行为照旧（本票不动解析器，这里钉住两侧共识）：
   assert.equal(parseSlashCommand('写/model'), null, '正文里的斜杠解析器也不当命令');
   assert.deepEqual(parseSlashCommand('/mo '), { name: 'mo', args: '' }, '带尾空格的命令行解析照旧');
+});
+
+// —— 历史搜索菜单内核（规格 2026-10-07 D13-D14）——
+
+test('historyMenu：空查询列全部、子串大小写不敏感、顺序保持调用方给的新→旧', () => {
+  const entries = ['写第三章', 'REVIEW 第2章', '写第一章', ''];
+  const all = historyMenu({ query: '', entries });
+  assert.deepEqual(all.matches.map((item) => item.text), ['写第三章', 'REVIEW 第2章', '写第一章'], '空串条目过滤，其余按最新在前');
+  assert.equal(all.open, true);
+  assert.equal(all.completion, '写第三章');
+
+  const hit = historyMenu({ query: '第2章', entries });
+  assert.deepEqual(hit.matches.map((item) => item.text), ['REVIEW 第2章']);
+
+  const ascii = historyMenu({ query: 'review', entries });
+  assert.deepEqual(ascii.matches.map((item) => item.text), ['REVIEW 第2章'], 'ASCII 大小写不敏感');
+
+  const none = historyMenu({ query: '不存在的查询', entries });
+  assert.equal(none.open, false);
+  assert.deepEqual(none.matches, []);
+  assert.equal(none.completion, null);
+});
+
+test('historyMenu：多行条目显示名取首行加省略号，补全是全文原文；高亮循环钳制', () => {
+  const entries = ['第一行\n第二行', '单行'];
+  const state = historyMenu({ query: '', entries, selected: 0 });
+  assert.equal(state.matches[0].name, '第一行…');
+  assert.equal(state.completion, '第一行\n第二行', '补全给全文原文');
+
+  const cycled = historyMenu({ query: '', entries, selected: -1 });
+  assert.equal(cycled.index, 1, '负越界回绕到最后一条');
+  assert.equal(cycled.completion, '单行');
+  assert.equal(cycled.hint, '↑/↓ 选择 · Tab/回车 补全 · Esc 收起', '历史菜单的提示行单独一份');
 });
