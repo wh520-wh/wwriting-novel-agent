@@ -1718,7 +1718,7 @@ test('/init 草稿按 Ctrl+S 也不走立即——命令草稿与回车完全同
 // —— 会话标题与归档（规格 2026-10-07 T1）——
 
 test('sessionRowLabel：标题非空时行首，为空时与旧实现逐字一致', async () => {
-  const { sessionRowLabel } = await import('../../src/terminal/commands.mjs');
+  const { sessionRowLabel } = await import('../../src/terminal/session-row.mjs');
   const base = { session_id: 's-1', updated_at: '2026-10-07T08:30:00', status: 'idle', turns: 3 };
   assert.equal(
     sessionRowLabel({ ...base, title: '' }),

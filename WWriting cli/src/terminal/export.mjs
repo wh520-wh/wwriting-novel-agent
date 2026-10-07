@@ -12,7 +12,7 @@ import path from 'node:path';
 
 import { formatThinkingSeconds, terminalStatusText } from './style.mjs';
 
-// 本地时间 → `YYYY-MM-DD HH:mm`（meta 用）。与 commands.mjs 的 formatTime 各自服务
+// 本地时间 → `YYYY-MM-DD HH:mm`（meta 用）。与 session-row.mjs 的 formatTime 各自服务
 // 不同场合（那边是会话列表行，这边是导出头），格式一致是刻意的——同一份时间在
 // 屏幕与导出物里长一个样。
 function formatDateTime(date) {

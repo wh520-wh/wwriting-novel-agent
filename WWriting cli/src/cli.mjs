@@ -37,7 +37,7 @@ import { createInputReader, isInteractiveTerminal, readOneLine } from './termina
 // 让位持有计数：嵌套让位（向导期间来确认卡）只在最外层动终端，键不会被两个读取者同时消费。
 import { createInputYielder } from './terminal/input-yield.mjs';
 // 确认的作答语义（选项表 / 翻译 / 确认卡）只有一份：decisions.mjs（铁律 4 / 铁律 11）；
-// /resume 挑选列表的行标签与 /sessions 共用 sessionRowLabel（住在 commands.mjs，
+// /resume 挑选列表的行标签与 /sessions 共用 sessionRowLabel（住在 session-row.mjs，
 // 经 pickers.mjs 的 sessionPickerItems 消费）。
 import { HELP_COMMANDS, createCommandHandler } from './terminal/commands.mjs';
 import { createDecisionCard } from './terminal/decisions.mjs';

@@ -5,7 +5,7 @@
 // 套路原先在 cli.mjs 里手工重复了三处，漏包一次 withInputSuspended 就会出现双读取者吃键
 // （那种故障没有任何测试能抓到）。收进来之后：让位只有一个出口，取消语义由每个调用方
 // 显式声明（菜单 = 不动草稿 / 挑选 = 静默取消 / 确认卡 = 按拒绝读），不再靠注释分辨。
-import { sessionRowLabel } from './commands.mjs';
+import { sessionRowLabel } from './session-row.mjs';
 
 // createMenuPicker({ selector, withInputSuspended }) → pick(options)
 //   selector          createSelector 的返回值（{ ask, canAsk }）。
