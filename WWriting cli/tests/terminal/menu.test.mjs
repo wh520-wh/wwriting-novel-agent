@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { cycleIndex, historyMenu, slashMenu } from '../../src/terminal/menu.mjs';
+import { cycleIndex, fileMenu, historyMenu, slashMenu } from '../../src/terminal/menu.mjs';
 import { parseSlashCommand } from '../../src/terminal/commands.mjs';
 
 const COMMANDS = Object.freeze([
@@ -108,4 +108,52 @@ test('historyMenu：多行条目显示名取首行加省略号，补全是全文
   assert.equal(cycled.index, 1, '负越界回绕到最后一条');
   assert.equal(cycled.completion, '单行');
   assert.equal(cycled.hint, '↑/↓ 选择 · Tab/回车 补全 · Esc 收起', '历史菜单的提示行单独一份');
+});
+
+// —— @文件引用菜单内核（规格 2026-10-07 D15-D18）——
+
+const FILES = [
+  { path: '设定/人物.md' },
+  { path: '第一章.md' },
+  { path: 'OUTLINE.md' },
+];
+
+test('fileMenu：@ 触发不要求前面是空白、@ 与光标间无空白、查询子串大小写不敏感', () => {
+  const start = fileMenu({ line: '@', cursor: 1, files: FILES });
+  assert.equal(start.open, true, '光 @ 就触发（浏览全部）');
+  assert.deepEqual(
+    start.matches.map((item) => item.path),
+    ['第一章.md', '设定/人物.md', 'OUTLINE.md'],
+    '路径短者在前（按字符串长度，顶层文件排前面）',
+  );
+
+  // 中文写作的常态：@ 直接贴着正文（参照@设定），按空白分词就永远触发不了。
+  const attached = fileMenu({ line: '参照@设', cursor: 4, files: FILES });
+  assert.deepEqual(attached.matches.map((item) => item.path), ['设定/人物.md']);
+
+  const ascii = fileMenu({ line: '@outline', cursor: 8, files: FILES });
+  assert.deepEqual(ascii.matches.map((item) => item.path), ['OUTLINE.md'], '大小写不敏感');
+
+  const none = fileMenu({ line: '写第一章', cursor: 4, files: FILES });
+  assert.equal(none.open, false, '没有 @ 不触发');
+
+  const closed = fileMenu({ line: '参照@设 修改', cursor: 7, files: FILES });
+  assert.equal(closed.open, false, '@ 与光标之间出现空白：引用 token 已结束');
+
+  const empty = fileMenu({ line: '@查无', cursor: 3, files: FILES });
+  assert.equal(empty.open, false, '无命中不开菜单');
+  assert.deepEqual(fileMenu({ line: '@设', cursor: 2, files: [] }).matches, [], '清单为空不开菜单');
+});
+
+test('fileMenu：补全替换从 @ 到光标的段且带尾空格；斜杠命令位不触发', () => {
+  const completion = fileMenu({ line: '参照@设', cursor: 4, files: FILES });
+  assert.equal(completion.completion, '参照设定/人物.md ', '@ 到光标的段被替换，尾空格结束引用');
+
+  // 行首斜杠命令位（无空白）归斜杠菜单：'/' 菜单优先级更高（D18）。
+  assert.equal(fileMenu({ line: '/mo', cursor: 3, files: FILES }).open, false);
+  // 斜杠出现在行中只是普通字符：@ 照常触发。
+  assert.equal(fileMenu({ line: '写/@设', cursor: 4, files: [{ path: '设定.md' }] }).open, true);
+
+  const hint = fileMenu({ line: '@', cursor: 1, files: FILES });
+  assert.equal(hint.hint, '↑/↓ 选择 · Tab 补全 · Esc 收起', '与斜杠菜单同一份提示行（回车语义相同）');
 });

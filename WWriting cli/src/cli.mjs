@@ -25,6 +25,7 @@ import { DEFAULT_HISTORY_BUDGET_CHARS } from './agent/history.mjs';
 import { readProjectMemory } from './agent/project-memory.mjs';
 import { createSkillService } from './skills/index.mjs';
 import { createChapterService } from './tools/chapters.mjs';
+import { listRelativeFiles } from './tools/files.mjs';
 import { createDeepSeekClient } from './model/deepseek-client.mjs';
 import { loadModelConfig, maskApiKey, readModelState } from './model/config.mjs';
 import { createEffortState } from './model/effort.mjs';
@@ -124,6 +125,18 @@ export async function main(
     if (recorded) lastRecordedInput = text;
   }
 
+  // @文件引用的文件清单（规格 2026-10-07 T5/D16）：启动扫一遍，之后每次提交后刷新
+  //（fire-and-forget）。失败降级空数组——菜单不开，打字照常，绝不打扰对话面。
+  let fileSuggestions = [];
+  async function refreshFileSuggestions() {
+    try {
+      fileSuggestions = await listRelativeFiles(projectRoot);
+    } catch {
+      fileSuggestions = [];
+    }
+  }
+  void refreshFileSuggestions();
+
   // —— 组合根 ——
   // 输入读取器先建：渲染器要拿它暴露的 composer 钩子与 readline 的行缓冲协作。
   // onSubmit / onControl 只捕获下面那个 handler 常量；handler 在 start() 之前完成赋值，
@@ -142,11 +155,14 @@ export async function main(
     // immediate（Ctrl+S）原样透传：命令草稿与回车完全同路，「立即」只作用于普通正文。
     // 裸 `/` 由输入层丢弃（工单 06）：弹窗退役后，「空 / + 回车」不再有任何动作。
     // 提交入口顺手记历史（D11）：命令、正文、立即提交都算输入，空行到不了这里。
+    // 提交后顺手刷新 @ 引用的文件清单（D16）：新写的章节立刻可以 @。
     onSubmit: (text, { immediate = false } = {}) => {
       void recordInputHistory(text);
+      void refreshFileSuggestions();
       void handler.handle(text, { immediate });
     },
     onControl: (name) => { void handler.handleControl(name); },
+    menuFiles: () => fileSuggestions,
   });
 
   // composer 只在交互会话交给渲染器：管道 / 非交互没有输入区，动态行的「就地重绘」

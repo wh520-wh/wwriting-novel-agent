@@ -388,3 +388,37 @@ export function createFileTools({ projectRoot, signal = null, permissions = null
 
   return { listFiles, readFile, searchFiles, writeFile, editFile, appendFile, restoreFile, countText };
 }
+
+// 递归列出创作目录的普通文件（@文件引用联想的数据源，规格 2026-10-07 D16）：
+// 跳过点开头的目录/文件与 node_modules；路径用 `/` 分隔（跨平台稳定的引用形状）；
+// 上限 limit（缺省 500），路径短者在前（顶层文件排前面，与菜单内核同一排序）。
+// 纯只读；读不出的子目录跳过（权限/符号链接环），不影响其余部分。
+export async function listRelativeFiles(projectRoot, { limit = 500, fs: fsImpl = fsp } = {}) {
+  if (typeof projectRoot !== 'string' || projectRoot === '') {
+    throw new Error('列创作目录文件需要有效的项目根。');
+  }
+  const skipNames = new Set(['node_modules']);
+  const results = [];
+  async function walk(dir, prefix) {
+    let entries;
+    try {
+      entries = await fsImpl.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') || skipNames.has(entry.name)) continue;
+      const relative = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+      if (entry.isDirectory()) {
+        await walk(path.join(dir, entry.name), relative);
+      } else if (entry.isFile()) {
+        results.push(relative);
+      }
+    }
+  }
+  // 全量收集后再排序截断：上限若卡在收集期，「留哪 500 个」就由 readdir 顺序决定，
+  // 与「路径短者在前」的排序承诺打架（深层长路径反而可能挤掉顶层文件）。
+  await walk(projectRoot, '');
+  results.sort((a, b) => (a.length - b.length) || a.localeCompare(b));
+  return results.length > limit ? results.slice(0, limit) : results;
+}

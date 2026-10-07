@@ -35,7 +35,7 @@ import {
   USER_MARK, paintText, resolveColor,
 } from './style.mjs';
 import { displayWidth, resolveColumns, clipToWidth, fullWidthRuleLine, fullWidthRuleParts } from './metrics.mjs';
-import { MENU_HINT, HISTORY_MENU_HINT, cycleIndex, historyMenu, slashMenu } from './menu.mjs';
+import { MENU_HINT, HISTORY_MENU_HINT, cycleIndex, fileMenu, historyMenu, slashMenu } from './menu.mjs';
 
 // 提示符与用户行标记是同一个字符（renderer 的 USER_MARK），屏幕上「❯ 开头」永远是用户说的。
 // 有颜色时用它上色：提示符是这条对话面上最需要一眼认出的东西。
@@ -130,6 +130,8 @@ export async function readOneLine({
 //   history            输入历史，**最新在前**（规格 2026-10-07 D12-D13）：既播种 readline
 //                      的 ↑（historySize 100），也是 Ctrl+R 历史搜索菜单的数据源；
 //                      本会话内的新提交也会从头部进入（相邻去重，与 readline 同纪律）。
+//   menuFiles          () => [{ path }]：@文件引用菜单的数据源（规格 2026-10-07 D16），
+//                      缺省 null = @ 不触发菜单（纯文本照常输入）。组合根注入缓存读法。
 // 返回 { start, stop, suspend, resume, composer, replaceDraft }。
 //   start({ initialText }) 返回 { interactive, reason }；initialText 会像用户亲手敲的一样
 //   填进输入框并提交（位置参数那条路用它，屏幕上因此也是同一个框）。
@@ -145,6 +147,7 @@ export function createInputReader({
   prompt = null,
   menuCommands = [],
   history = [],
+  menuFiles = null,
 } = {}) {
   const noticeTarget = stderr ?? stdout;
   // 颜色判据与渲染器共用同一份（NO_COLOR 一律不上色），算一次就够。
@@ -181,6 +184,8 @@ export function createInputReader({
   // 历史搜索的高亮位与数据源（最新在前）。提交过的新条目也从头部进入。
   let historySelected = 0;
   const historyEntries = Array.isArray(history) ? [...history] : [];
+  // @文件菜单的高亮位（独立于斜杠/历史，避免互相串位）。
+  let fileSelected = 0;
   // suspend 前带走的半行草稿（缺陷猎捕报告 3）。suspend 会真的关掉 readline：
   // 已键入的半行既不在缓冲也不在历史里，不显式承接就是无声销毁——屏幕上和缓冲里双双消失。
   // 恢复时原样写回（含光标位置）。带控制字符的半行不接（会被 readline 当按键解释）；
@@ -397,7 +402,7 @@ export function createInputReader({
         // Ctrl+R（\x12，readline 自己的 reverse-i-search 必须被拦在前头）：
         // 搜索模式已开且菜单在场 = 选中下一条（经典肌肉记忆）；否则打开搜索（D13）。
         if (menuMode === 'history' && menuOpen()) {
-          const state = menuStateFor(rl.line);
+          const { state } = menuStateFor();
           if (state.open) {
             historySelected = cycleIndex(state.index, 1, state.matches.length);
             menuText = renderMenu({ ...state, index: historySelected });
@@ -422,10 +427,11 @@ export function createInputReader({
       }
       if (key && menuOpen() && (key.name === 'up' || key.name === 'down')) {
         // 菜单态方向键 = 移动高亮（循环），绝不翻历史；不交给 readline。
-        const state = menuStateFor(rl.line);
+        const { state, kind } = menuStateFor();
         if (state.open) {
           const index = cycleIndex(state.index, key.name === 'up' ? -1 : 1, state.matches.length);
-          if (menuMode === 'history') historySelected = index;
+          if (kind === 'history') historySelected = index;
+          else if (kind === 'file') fileSelected = index;
           else menuSelected = index;
           menuText = renderMenu({ ...state, index });
           if (areaDrawn) drawArea();
@@ -447,10 +453,11 @@ export function createInputReader({
       }
       if (key && key.name === 'tab' && key.shift !== true) {
         // Tab：菜单开着 = 补全高亮项（斜杠补全带尾空格，token 结束菜单随之收起；
-        // 历史补全是全文进草稿并退出搜索模式）；菜单关着 = 吞掉（保持「普通文本里
-        // Tab 无操作」，也绝不让字面 \t 进草稿）。
+        // @ 文件补全用「路径 + 尾空格」替换光标 token；历史补全是全文进草稿并退出
+        // 搜索模式）；菜单关着 = 吞掉（保持「普通文本里 Tab 无操作」，也绝不让字面
+        // \t 进草稿）。
         if (menuOpen()) {
-          const state = menuStateFor(rl.line);
+          const { state } = menuStateFor();
           if (state.open && typeof state.completion === 'string') {
             if (menuMode === 'history') exitHistoryMode(state.completion);
             rl.line = state.completion;
@@ -464,7 +471,7 @@ export function createInputReader({
       if (key && menuMode === 'history' && menuOpen() && (key.name === 'return' || key.name === 'enter')) {
         // 历史搜索态的回车 = 补全进草稿、**不提交**（D13 的有意偏差，提示行写明）。
         // 菜单没开（查询无命中）时不拦：回车照常提交，那是唯一的自然出口。
-        const state = menuStateFor(rl.line);
+        const { state } = menuStateFor();
         if (state.open && typeof state.completion === 'string') {
           exitHistoryMode(state.completion);
           rl.line = state.completion;
@@ -592,14 +599,11 @@ export function createInputReader({
       menuLineSeen = line;
       menuDismissed = false;
     }
-    const state = menuStateFor(line);
-    if (menuMode === 'history') {
-      historySelected = state.index;
-      menuKind = state.open ? 'history' : null;
-    } else {
-      menuSelected = state.index;
-      menuKind = state.open ? 'slash' : null;
-    }
+    const { state, kind } = menuStateFor();
+    menuKind = state.open ? kind : null;
+    if (kind === 'history') historySelected = state.index;
+    else if (kind === 'file') fileSelected = state.index;
+    else menuSelected = state.index;
     const next = state.open && !menuDismissed ? renderMenu(state) : null;
     if (next === menuText) return;
     menuText = next;
@@ -609,11 +613,22 @@ export function createInputReader({
   // 菜单此刻开没开（拦截层用）：以屏幕上那一帧为准——refreshMenu 在每次按键后都会刷新它。
   const menuOpen = () => menuText !== null;
 
-  // 当前菜单态的内核状态（规格 2026-10-07 D18）：历史搜索显式进入时压过斜杠判据；
-  // 否则按行内容自动（斜杠命令位，T5 将在此并入 @ 文件判据）。
-  const menuStateFor = (line) => (menuMode === 'history'
-    ? historyMenu({ query: line, entries: historyEntries, selected: historySelected })
-    : slashMenu({ line, commands: menuCommands, selected: menuSelected }));
+  // 当前菜单态的内核状态（规格 2026-10-07 D18）：历史搜索显式进入时压过一切；
+  // 否则斜杠命令位优先，判据不命中且给得出文件清单时按光标 token 判 @ 文件菜单。
+  // 返回 { state, kind }，kind ∈ 'history' | 'slash' | 'file' | null。
+  const menuStateFor = () => {
+    const line = typeof rl?.line === 'string' ? rl.line : '';
+    if (menuMode === 'history') {
+      return { state: historyMenu({ query: line, entries: historyEntries, selected: historySelected }), kind: 'history' };
+    }
+    const slashState = slashMenu({ line, commands: menuCommands, selected: menuSelected });
+    if (slashState.open || menuFiles === null) {
+      return { state: slashState, kind: slashState.open ? 'slash' : null };
+    }
+    const cursor = Number.isInteger(rl?.cursor) ? rl.cursor : line.length;
+    const fileState = fileMenu({ line, cursor, files: menuFiles(), selected: fileSelected });
+    return { state: fileState, kind: fileState.open ? 'file' : null };
+  };
 
   // 菜单不进历史：回车接受 / Ctrl+S 交出草稿**之前**把菜单行从屏幕上清成空行。
   // 必须在行模型还有效的时刻调用（两处调用点都在拦截层，几何此刻算得准）。
@@ -784,6 +799,7 @@ export function createInputReader({
     menuMode = null;
     menuKind = null;
     historySelected = 0;
+    fileSelected = 0;
     rl = null;
     interactive = false;
     liveText = null;

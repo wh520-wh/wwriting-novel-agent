@@ -53,6 +53,43 @@ export const MENU_HINT = '↑/↓ 选择 · Tab 补全 · Esc 收起';
 // entries 契约：**最新在前**（与 readline 的 history 数组同向，调用方反转一次）。
 export const HISTORY_MENU_HINT = '↑/↓ 选择 · Tab/回车 补全 · Esc 收起';
 
+// —— @文件引用菜单（输入态变体之三，规格 2026-10-07 D15-D18）——
+//
+// 触发判据：从光标往回找最近的 `@`，它到光标之间**没有空白**即触发（查询 = @ 之后
+// 的剩余部分）。不要求 @ 前面是空白——中文写作「参照@设定」里 @ 直接贴着正文，
+// 按空白分词永远触发不了；代价是输入邮箱地址这类文本也可能短暂开菜单，但查询通常
+// 无命中，菜单不开，可接受。行首斜杠命令位永远归斜杠菜单。匹配 = 路径子串包含
+// （大小写不敏感），路径短者在前（顶层文件排前面）。补全 = 用「路径 + 尾空格」替换
+// 从 @ 到光标的段——尾空格结束引用，菜单随之收起（与斜杠补全同纪律）；回车提交
+// 原文（ADR-0022 家族）。
+export function fileMenu({ line, cursor = null, files, selected = 0 } = {}) {
+  const text = typeof line === 'string' ? line : '';
+  const close = () => ({ open: false, matches: [], index: 0, completion: null, hint: MENU_HINT });
+  if (text.startsWith('/') && !/\s/.test(text)) return close();
+  const cur = Number.isInteger(cursor) && cursor >= 0 ? Math.min(cursor, text.length) : text.length;
+  const before = text.slice(0, cur);
+  const at = before.lastIndexOf('@');
+  if (at === -1) return close();
+  const query = before.slice(at + 1);
+  if (/\s/.test(query)) return close(); // @ 与光标之间已有空白：引用 token 已结束。
+  const matches = (Array.isArray(files) ? files : [])
+    .filter((item) => typeof item?.path === 'string' && item.path !== '')
+    .filter((item) => query === '' || item.path.toLowerCase().includes(query))
+    .sort((a, b) => (a.path.length - b.path.length) || a.path.localeCompare(b.path))
+    .map((item) => ({ path: item.path, name: item.path, description: '' }));
+  const open = matches.length > 0;
+  const index = open ? cycleIndex(selected, 0, matches.length) : 0;
+  return {
+    open,
+    matches,
+    index,
+    completion: open
+      ? `${text.slice(0, at)}${matches[index].path} ${text.slice(cur)}`
+      : null,
+    hint: MENU_HINT,
+  };
+}
+
 // 多行原文 → 单行显示名：首行 + 省略号。宽度裁剪归渲染层，这里只管「多行要说一声」。
 export function historyDisplayName(text) {
   const raw = typeof text === 'string' ? text : '';

@@ -1396,3 +1396,54 @@ test('本会话提交过的原文立即可搜（提交入口进搜索源，相�
     reader.stop();
   }
 });
+
+// —— @文件引用菜单（规格 2026-10-07 T5/D15-D18）——
+
+test('@ 触发文件菜单：Tab 用「路径 + 尾空格」补全进草稿，菜单收起不提交', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const submitted = [];
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' },
+    menuFiles: () => [{ path: '设定/人物.md' }, { path: '第一章.md' }],
+    onSubmit: (text) => submitted.push(text) });
+  reader.start();
+  try {
+    stdin.write('参照@设');
+    await tick();
+    let screen = screenText(stdout.text());
+    assert.ok(screen.includes('设定/人物.md'), '文件菜单列出命中项（@ 贴着正文也触发）');
+
+    stdin.write('\t');
+    await tick();
+    screen = screenText(stdout.text());
+    assert.ok(screen.includes('❯ 参照设定/人物.md'), '补全替换 @ 段进草稿');
+    assert.equal(screen.includes('↑/↓ 选择'), false, '尾空格结束引用，菜单收起');
+    assert.deepEqual(submitted, [], '补全不是提交');
+
+    stdin.write('\r');
+    await tick();
+    assert.deepEqual(submitted, ['参照设定/人物.md '], '回车提交补全后的整行原文');
+  } finally {
+    reader.stop();
+  }
+});
+
+test('没注入 menuFiles 时 @ 是普通文本：不开菜单、不拦截按键', async () => {
+  const stdin = makeFakeTTY();
+  const stdout = makeSink({ tty: true });
+  const submitted = [];
+  const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' },
+    onSubmit: (text) => submitted.push(text) });
+  reader.start();
+  try {
+    stdin.write('邮箱 user@example.com');
+    await tick();
+    const screen = screenText(stdout.text());
+    assert.equal(screen.includes('↑/↓ 选择'), false, '没有数据源就没有菜单');
+    stdin.write('\r');
+    await tick();
+    assert.deepEqual(submitted, ['邮箱 user@example.com'], '@ 照常进正文提交');
+  } finally {
+    reader.stop();
+  }
+});
