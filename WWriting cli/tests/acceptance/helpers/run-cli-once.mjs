@@ -139,13 +139,23 @@ const watchdog = setTimeout(() => {
   void writeLine({ code: null, error: 'driver 等待超时' }).then(() => process.exit(1));
 }, Number.isInteger(spec.deadlineMs) ? spec.deadlineMs : 30000);
 
+// 结果写完后的排空再退出：直落 process.exit 会与仍在收尾的流/套接字句柄竞态，
+// Windows 上偶发 libuv 关闭断言（!(handle->flags & UV_HANDLE_CLOSING)，退出码 0xC0000409，
+// 见 docs/repair/2026-09-29 记录的既有环境抖动）。先排空 stdout、yield 几轮让句柄收尾，
+// then exit；看门狗保证万一还有活句柄撑着，30 秒内也会退出。
+async function exitClean(code) {
+  await new Promise((resolve) => { process.stdout.write('', resolve); });
+  for (let i = 0; i < 8; i += 1) await wait(settleMs);
+  process.exit(code);
+}
+
 try {
   const result = mode === 'session' ? await runSession() : await runMain();
   clearTimeout(watchdog);
   await writeLine(result);
-  process.exit(0);
+  await exitClean(0);
 } catch (error) {
   clearTimeout(watchdog);
   await writeLine({ code: null, error: String(error?.message ?? error) });
-  process.exit(1);
+  await exitClean(1);
 }

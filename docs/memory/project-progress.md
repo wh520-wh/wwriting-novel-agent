@@ -13,9 +13,11 @@
 |---|---|---|---|
 | 桌面全量 `npm test` | 2026-10-03 | 2081/2081，exit 0 | `.local/logic-review/full-test-final.log`；本次未重跑，不覆盖后续改动 |
 | 桌面 UI / desktop / architecture 定向测试 | 2026-10-08 | 707/707，exit 0 | `.local/ui-tests-final.log`；不等于全量通过，未重新打包 |
-| CLI 全量，Node v24.19.0 | 2026-10-08 | 1036/1049，13 项失败 | `.local/cli-memory-node24.log`；9 项终端输入、1 项斜杠菜单、3 项 Windows 子进程退出 |
+| CLI 全量，Node v25.2.1 | 2026-10-08 | 1049/1049，exit 0 | `.local/cli-full-after-fix-2026-10-08.log`；先在干净环境（不设 `NO_COLOR`）复跑到 1046/1049，3 项失败全部是验收驱动器退出时的 libuv 句柄断言（0xC0000409），当日修复 `run-cli-once.mjs` 退出时序后全量全绿 |
 | CLI 记忆 / 压缩 / 模型定向测试 | 2026-10-08 | 228/228，exit 0 | `.local/cli-memory-final.log`；真实本地 HTTP/SSE 验收另 1/1（`.local/cli-memory-http.log`），模型为确定性夹具 |
-| CLI 输入历史 / 输入框 / 菜单，推送前复核 | 2026-10-08 | 70/79，9 项失败 | `node --test tests/storage/input-history.test.mjs tests/terminal/input.test.mjs tests/terminal/menu.test.mjs`，Node v25.2.1；`.local/document-review/push-terminal-tests.log`。新增的历史压缩保留时间戳/失败保留原文件、空搜索 Esc、引用大小写检查通过；剩余终端输入失败与此前全量日志一致 |
+| CLI 输入历史 / 输入框 / 菜单，推送前复核 | 2026-10-08 | 70/79，9 项失败 | `node --test tests/storage/input-history.test.mjs tests/terminal/input.test.mjs tests/terminal/menu.test.mjs`，Node v25.2.1；`.local/document-review/push-terminal-tests.log`。**同日复核：原命令重跑 79/79 全通过，该 9 项失败不复现**（同 Node v25.2.1、干净环境），疑与当日执行环境的终端/环境变量差异相关；该行保留当日原始记录 |
+
+补充口径（记录于：2026-10-08｜依据：当日全量日志与探针实测）：CLI 全量验收须在**未设 `NO_COLOR`** 的环境跑——子进程虽显式声明 `NO_COLOR=1`，验收用例自身要断言上色行为，执行环境带这个变量时会压掉颜色用例（当日第一轮 4 项失败即此来源，已实测坐实）。
 
 ## 已确认待办
 
@@ -23,15 +25,21 @@
 
 | 事项 | 当前证据 | 下一步 |
 |---|---|---|
-| 桌面章节版本清单损坏与孤儿版本恢复 | 本会话模拟快照文件已写、清单未更新，下一次快照覆盖未登记版本；坏清单返回 SyntaxError。当前 `versions.mjs` 仍按清单分配版本号 | 修复后核验孤儿版保留与坏清单降级；不等同于当前正文丢失 |
+| 桌面章节版本清单损坏与孤儿版本恢复 | **2026-10-08 探针实测（本轮）**：坏清单 `listChapterVersions` 抛 SyntaxError——版本时间线接口 500、章节目录加载降级；清单记到 v1 而磁盘有 v1/v2 时，新快照分配 v2 **覆盖孤儿**（探针脚本 `.local/version-probe/probe.mjs`）。全分支史核过：`versions.mjs` 仅 3 个提交，均未触碰此二场景。当前 `versions.mjs:25` 仍 `readJson` 裸抛、`:33` 仍按清单分配版本号。**仍未修复** | 修复后核验孤儿版保留与坏清单降级；不等同于当前正文丢失 |
 | 桌面日志尾行修复与边界缺口恢复复核 | `truncateTrailingPartial` 仍只扫描末尾 64KiB；缺口重建目前只覆盖健康段之间的断层，首/尾隔离段仍依赖清单。本轮已核对源码，未重跑故障探针 | 分别复核历史报告 #6 和 21-3 的边界场景；不能用 UTF-8 解码修复或中间断层重建来关闭它们 |
-| CLI 全量剩余失败 | 上表全量日志可定位 13 项失败；本轮记忆测试通过，未修终端与子进程问题 | 分别复现输入行为与进程退出，不能用记忆定向通过关闭它们 |
 | 当前版本真实模型长篇验证 | 2026-10-08 两轮工作均未调用付费模型；较早真实连写记录不能替代当前验证 | 验证连写、修订、重启、压缩后的事实与伏笔保留，并记录作者干预 |
 | 样式量化目标 | 当前仅有体积追踪值，目标阈值尚未决定 | 测量后再决定；不擅自补造阈值 |
 
 记录于：2026-10-08｜状态：当前有效｜依据：Node 遍历根 `src/`，按 LF 归一统计 `.js/.mjs`（`split("\n").length` 含末尾空行，UTF-8 字节）。逻辑源码 126 文件，0 越线；近字节红线文件：`model-settings-page.js` 51048B、`app.js` 50360B、`journal-handlers.mjs` 50355B。样式现状：`styles.css` 2690 行 / 89606B，`agent.css` 2193 行 / 58397B。这里只登记实测值，不把历史大小当当前值。
 
 ## 最近变更
+
+### CLI 全量转绿与状态复核（记录于：2026-10-08｜状态：当前有效｜依据：当日全量日志、驱动器探针与源码核对）
+
+- **旧记录已失效**：上文「CLI 长篇上下文」条目内的 1034/1036 与 13 项失败是当时快照；同日复核后 CLI 全量为 **1049/1049**（干净环境、修驱动器退出时序后，`WWriting cli` 目录执行，日志 `.local/cli-full-after-fix-2026-10-08.log`）。
+- **修复一项既有抖动**：验收驱动器 `tests/acceptance/helpers/run-cli-once.mjs` 写完结果行直落 `process.exit()`，与流/套接字句柄收尾竞态，Windows 上偶发 libuv 断言（0xC0000409）。探针复现 6/20，修后 20+40 连跑全 0；整装 `main-path.test.mjs` 5 连跑全绿。修复记录已回填 `WWriting cli/docs/repair/2026-09-29-缺陷猎捕修复记录.md`（该项此前登记为「未修，只记录」）。**该改动尚未提交。**
+- **两项排除**：斜杠菜单验收的「飘」不成立（10 连跑 + 当日全量均稳过；上文 Node v24 日志里那次 8.4 秒失败是「草稿清空」等待超时，未再复现）；上文「推送前复核」行原命令重跑 79/79 全通过（9 项失败不复现）。另：`NO_COLOR=1` 执行环境会压掉颜色用例——全量验收须在未设该变量的环境跑。
+- 逐项证据与待办更新见上两节；本次未动桌面端与统一行为规格书。
 
 ### 文档与项目记忆整理（记录于：2026-10-08｜状态：当前有效｜依据：本轮文档差异与内容复核）
 
@@ -45,7 +53,7 @@
 - 复用既有模型窗口/输出上限表，按可用输入窗口估算容量，计入系统、技能、记忆、当前指令与工具。接近窗口时自动收敛较早轮次，尽量保留近期完整原文；工具轮内也检查窗口，保留当前指令和最新完整工具交换。不新增依赖或配置。
 - 删除摘要 6000 字符硬截断；超长历史按窗口分批吸收，空摘要、输出被截断、请求失败或停止时均不发布摘要。自动摘要复用 `digest_compacted` 事件和既有覆盖边界，重启继续使用；手动 `/compact` 保留。
 - 最终相关验证：`node --test tests/agent/history.test.mjs tests/agent/compact.test.mjs tests/agent/run-controller.test.mjs tests/agent/agent-loop.test.mjs tests/agent/project-memory.test.mjs tests/agent/replay.test.mjs tests/model/model-limits.test.mjs tests/model/deepseek-client.test.mjs` **228/228，exit 0**（CLI 目录执行，Node v25.2.1，日志 `.local/cli-memory-final.log`）；`node --test --test-name-pattern="超过旧历史预算" tests/acceptance/main-path.test.mjs` **1/1，exit 0**（真实本地 HTTP/SSE，日志 `.local/cli-memory-http.log`）。覆盖长历史、模型窗口切换、摘要跨请求分批、近期全文、重启摘要、压缩失败/停止、长项目记忆和工具交换完整性。
-- 全量检查：CLI `npm test` 在 Node v25.2.1 为 **1034/1049**；其中旧历史截断验收已按新契约修订，颜色失败与执行环境 `NO_COLOR=1` 相关。清除该子进程环境变量后，用 Node v24.19.0 执行 `--test tests/**/*.test.mjs` 为 **1036/1049，13 项失败**（日志 `.local/cli-memory-node24.log`）：9 项终端输入、1 项斜杠菜单验收、3 项 Windows 子进程退出（libuv 断言）。这些路径未在本轮修改，未宣称全仓全绿；本轮最终定向测试通过后未再跑全量。
+- **⚠ 该行已过时（2026-10-08 晚复核）**：CLI 全量现为 **1049/1049**；下方 1034/1036 与 13 项失败为当日较早快照，作历史保留——全量检查：CLI `npm test` 在 Node v25.2.1 为 **1034/1049**；其中旧历史截断验收已按新契约修订，颜色失败与执行环境 `NO_COLOR=1` 相关。清除该子进程环境变量后，用 Node v24.19.0 执行 `--test tests/**/*.test.mjs` 为 **1036/1049，13 项失败**（日志 `.local/cli-memory-node24.log`）：9 项终端输入、1 项斜杠菜单验收、3 项 Windows 子进程退出（libuv 断言）。这些路径未在本轮修改，未宣称全仓全绿；本轮最终定向测试通过后未再跑全量。
 - 9 个改动源码文件通过 `node --check` 与 LF 归一体积检查（≤1200 行、≤51200B），`git diff --check` 通过。现行契约写入统一行为规格书 §34，原固定预算/仅手动压缩/回放预算 ADR 标为历史。
 - 验证边界：未调用付费模型，未验证摘要的实际文学信息保留质量。窗口数据沿用既有能力表，第三方端点仍用既有保守回落；字符估算不是精确 token 计数。单份项目记忆、当前输入或最新工具交换本身超窗时明确失败，不静默截断。
 
