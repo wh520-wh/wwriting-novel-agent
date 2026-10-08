@@ -38,7 +38,7 @@ async function runPlanCommand(_args, ctx) {
   renderer.printPlan(plan.items);
 }
 
-// /compact：手动压缩（CLI 有意不做自动压缩——触发时机与安全点的复杂度不值得）。
+// /compact：作者也可主动提前压缩；运行入口另在接近模型窗口时自动压缩。
 // 只在空闲时可用：与在跑的轮并发会造出「摘要缺了正在说的这轮」的假账（控制器再拦一次）。
 async function runCompactCommand(_args, ctx) {
   const { reply, renderer, getController } = ctx;

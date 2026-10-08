@@ -1,38 +1,21 @@
 /**
- * Motion Runtime — CSS transition–backed animation helpers for app-shell.
- *
- * 第十五轮（Task 19，F9）：旧动画库退役。对外 API 逐字保持（setupMotion/
- * isReducedMotion/safeAnimate/clearTemporaryProps/openDrawer/closeDrawer/
- * openModal/closeModal/motion），实现从旧动画时间线改为 CSS transition +
- * 内联样式切换：从态 → 强制 reflow → 目标态 + transition → transitionend
- *（setTimeout 兜底）→ 完成回调。MOTION 秒值 ×1000 取整为 ms；power2/back
- * 缓动用 cubic-bezier 近似。
- *
- * 保持的契约（阻断级）：
- *   - 「未 setup 同步早退」：setupMotion() 未调用（initialized=false）时，
- *     所有 open/close 走同步 instant 分支——直接设终态样式 + 同步回调
- *     onComplete，不启动 transition（settings-modal.test.mjs 钉住此行为）。
- *   - isReducedMotion() 命中时同样走同步分支（原语义：跳过错动）。
- *   - open 完成后保留内联终态样式（与旧实现 set 后不清 props 一致），
- *     close 完成后清掉内联临时样式（与旧实现 clearProps 一致）。
+ * 浮层动效统一入口：CSS transition，可从当前画面反向，不执行被取代的完成回调。
+ * 未 setup / reduced-motion 同步到达终态；open 保留终态，close 清理临时属性。
  */
 
 /* ─── MOTION token constants（ms + CSS 缓动近似） ─── */
 const MOTION = Object.freeze({
-  instant: 0,
   fast: 140,
   base: 220,
   slow: 320,
-  // power2.out / power2.in / power2.inOut / back.out(1.35) 的 cubic-bezier 近似。
-  easeOut: "cubic-bezier(0.33, 1, 0.68, 1)",
-  easeIn: "cubic-bezier(0.32, 0, 0.67, 0)",
-  easeInOut: "cubic-bezier(0.65, 0, 0.35, 1)",
-  emphasis: "cubic-bezier(0.34, 1.56, 0.64, 1)",
+  easeOut: "cubic-bezier(0.22, 1, 0.36, 1)",
+  easeIn: "cubic-bezier(0.4, 0, 1, 1)",
 });
 
 let initialized = false; // setupMotion() 置 true；未 setup 走同步早退分支
 let _reducedMotion = false;
 let _reduceQuery = null;
+const activeTransitions = new WeakMap();
 
 /* ─── 内联样式辅助（兼容真实 DOM 与测试 mock 的 plain style 对象） ─── */
 const CSS_NAME = { opacity: "opacity", transform: "transform", pointerEvents: "pointer-events" };
@@ -133,11 +116,21 @@ export function clearTemporaryProps(targets, props) {
  */
 function animate(target, from, to, { duration, ease, delay = 0, onComplete } = {}) {
   if (!target) return;
+  const previous = activeTransitions.get(target);
+  if (previous) {
+    // 先读实际帧，再取消旧监听/定时器；反向时不跳回逻辑起点。
+    if (typeof globalThis.window?.getComputedStyle === "function") {
+      const current = window.getComputedStyle(target);
+      from = Object.fromEntries(Object.keys(to).map((key) => [key, current[key]]));
+    }
+    previous();
+  }
   if (duration <= 0) {
     setInline(target, to);
     onComplete?.();
     return;
   }
+  target.style.transition = "none";
   setInline(target, from);
   void (target.offsetWidth ?? undefined); // 强制 reflow：真实 DOM 启动 transition；mock 空转
   const cssProps = Object.keys(to).map((k) => CSS_NAME[k] ?? k);
@@ -148,19 +141,25 @@ function animate(target, from, to, { duration, ease, delay = 0, onComplete } = {
   setInline(target, to);
   let settled = false;
   let fallback = null;
-  const finish = () => {
+  const cleanup = () => {
     if (settled) return;
     settled = true;
     target.removeEventListener?.("transitionend", onEnd);
     if (fallback !== null) clearTimeout(fallback);
-    // 动画结束后清掉内联 transition：终态样式保留（open 语义），过渡声明不残留。
-    delete target.style.transition;
+    activeTransitions.delete(target);
+    clearInline(target, "transition");
+  };
+  const finish = () => {
+    if (settled) return;
+    cleanup();
     onComplete?.();
   };
   const onEnd = (event) => {
+    if (event?.target && event.target !== target) return;
     if (event?.propertyName != null && !cssProps.includes(event.propertyName)) return;
     finish();
   };
+  activeTransitions.set(target, cleanup);
   target.addEventListener?.("transitionend", onEnd);
   fallback = setTimeout(finish, duration + delay + 60);
 }
@@ -189,7 +188,11 @@ function collectDone(invocations, done) {
  * 打开右侧抽屉：scrim 淡入 + 抽屉滑入 + 内容错峰进场（原动画时间线等价）。
  */
 export function openDrawer(drawer, scrim, { body, tabs } = {}) {
+  for (const target of [drawer, scrim]) {
+    if (target?.dataset) delete target.dataset.closing;
+  }
   if (!initialized || isReducedMotion()) {
+    for (const target of [drawer, scrim, body, tabs]) activeTransitions.get(target)?.();
     safeAnimate(() => {
       if (scrim) setInline(scrim, { opacity: "1", pointerEvents: "auto" });
       if (drawer) setInline(drawer, { transform: "translateX(0)" });
@@ -216,7 +219,7 @@ export function openDrawer(drawer, scrim, { body, tabs } = {}) {
         el,
         { opacity: "0", transform: "translateY(10px)" },
         { opacity: "1", transform: "translateY(0)" },
-        { duration: MOTION.base, ease: MOTION.easeOut, delay: MOTION.fast + index * 40 }
+        { duration: MOTION.base, ease: MOTION.easeOut, delay: 60 + index * 30 }
       );
     });
   });
@@ -228,6 +231,7 @@ export function openDrawer(drawer, scrim, { body, tabs } = {}) {
  */
 export function closeDrawer(drawer, scrim, { onComplete } = {}) {
   if (!initialized || isReducedMotion()) {
+    for (const target of [drawer, scrim]) activeTransitions.get(target)?.();
     if (drawer) clearTemporaryProps(drawer, "x,opacity");
     if (scrim) clearTemporaryProps(scrim, "opacity,pointerEvents");
     if (onComplete) onComplete();
@@ -269,7 +273,9 @@ export function closeDrawer(drawer, scrim, { onComplete } = {}) {
  * 打开模态浮层：scrim 淡入 + panel scale+fade 进场。
  */
 export function openModal(scrim, panel) {
+  if (scrim?.dataset) delete scrim.dataset.closing;
   if (!initialized || isReducedMotion()) {
+    for (const target of [scrim, panel]) activeTransitions.get(target)?.();
     safeAnimate(() => {
       if (scrim) setInline(scrim, { opacity: "1", pointerEvents: "auto" });
       if (panel) setInline(panel, { transform: "translateY(0) scale(1)", opacity: "1" });
@@ -299,6 +305,7 @@ export function openModal(scrim, panel) {
  */
 export function closeModal(scrim, panel, { onComplete } = {}) {
   if (!initialized || isReducedMotion()) {
+    for (const target of [scrim, panel]) activeTransitions.get(target)?.();
     if (panel) clearTemporaryProps(panel, "scale,y,opacity");
     if (scrim) clearTemporaryProps(scrim, "opacity,pointerEvents");
     if (onComplete) onComplete();

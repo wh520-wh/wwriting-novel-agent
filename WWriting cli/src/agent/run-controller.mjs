@@ -9,13 +9,15 @@
 //     不清就会永久挂起（控制器裁决的硬要求，不是可选优化）。
 import { randomUUID } from 'node:crypto';
 
-import { createAgentLoop } from './agent-loop.mjs';
+import { createAgentLoop, DEFAULT_SYSTEM_PROMPT, assembleSkillCatalogBlock } from './agent-loop.mjs';
+import { TOOL_SCHEMAS } from '../tools/tool-catalog.mjs';
+import { inputBudgetChars, resolveModelLimits } from '../model/model-limits.mjs';
 import {
   DEFAULT_HISTORY_BUDGET_CHARS, buildDigestMessage, buildHistoryMessages, estimateChars, estimateTurnsChars, latestDigest, projectTurns,
 } from './history.mjs';
 import { runCompaction } from './compact.mjs';
 import {
-  PROJECT_MEMORY_BUDGET_CHARS, buildMemoryInjection, memoryHashFor, readProjectMemory,
+  buildMemoryInjection, memoryHashFor, readProjectMemory,
 } from './project-memory.mjs';
 import { createFileTools } from '../tools/files.mjs';
 import { createPermissionState } from '../tools/permissions.mjs';
@@ -166,7 +168,7 @@ export function createRunController({
   clock = Date.now,
   idFactory = randomUUID,
   historyBudgetChars = DEFAULT_HISTORY_BUDGET_CHARS,
-  memoryBudgetChars = PROJECT_MEMORY_BUDGET_CHARS,
+  memoryBudgetChars = DEFAULT_HISTORY_BUDGET_CHARS,
   readMemory = readProjectMemory,
   onNotice = null,
   onReasoningPreview = null,
@@ -190,7 +192,7 @@ export function createRunController({
   // 缓存挂在控制器上，因此 /resume 换掉控制器（cli.mjs 的 switchSession）会重置它，
   // 代价是新控制器的第一轮多付一次前缀失效。这是可接受的：换会话本来就该失效。
   const memoryBudget = Number.isFinite(memoryBudgetChars) && memoryBudgetChars > 0
-    ? Math.floor(memoryBudgetChars) : PROJECT_MEMORY_BUDGET_CHARS;
+    ? Math.floor(memoryBudgetChars) : DEFAULT_HISTORY_BUDGET_CHARS;
   // 哈希相同 → 复用**上一条那个对象**，不是「内容相同的另一条」。
   // 字节级一致是 ADR-0006 的原话，也是 DeepSeek 前缀缓存命中的前提。
   // 缓存里存的是**整份注入结果**（不只 message）：命中时连 state / omittedChars 也照旧复用，
@@ -483,8 +485,20 @@ export function createRunController({
       // 所以并发取，不必让用户干等两次磁盘往返。各自的降级策略互不影响。
       // 技能清单同批并发取：每轮只发现一次（上游按 runId 缓存的同语义），失败返空数组
       // 不阻塞——技能坏了写作照常（ADR-0014）。
-      const [{ history, historyMeta, notice: noticeResult }, { memory, memoryCached }, skillCatalog] =
+      let [{ history, historyMeta, notice: noticeResult }, { memory, memoryCached }, skillCatalog] =
         await Promise.all([loadHistory(inputId), loadMemory(), loadSkillCatalog()]);
+      const inputBudget = inputBudgetChars(await modelClient?.getLimits?.() ?? resolveModelLimits());
+      const reserved = DEFAULT_SYSTEM_PROMPT.length + assembleSkillCatalogBlock(skillCatalog).length
+        + projectRoot.length + 16 + JSON.stringify(TOOL_SCHEMAS).length
+        + estimateChars(memory?.message ? [memory.message] : []) + text.length;
+      const room = inputBudget - reserved;
+      if (room <= 0) throw new Error('项目记忆或当前输入超出模型窗口，原始记录已保留。');
+      if (estimateChars(history) > room) {
+        notice?.('压缩中', { inputId });
+        await compact({ automatic: true, currentInputId: inputId, room, signal: controller.signal });
+        ({ history, historyMeta, notice: noticeResult } = await loadHistory(inputId));
+        if (estimateChars(history) > room) throw new Error('压缩后仍超出模型窗口，原始记录已保留。');
+      }
       const loop = agentLoopFactory({
         modelClient,
         toolsFactory: resolvedToolsFactory,
@@ -502,6 +516,7 @@ export function createRunController({
         text,
         signal: controller.signal,
         onReasoningPreview,
+        onCompact: (message) => notice?.(message, { inputId }),
         retryOfRunId,
       });
       if (notice !== null && noticeResult !== null) notice(noticeResult, { inputId });
@@ -779,48 +794,55 @@ export function createRunController({
     return handle.eventStore.readTail({ maxBytes });
   }
 
-  // 会话压缩（/compact）：把已往对话收敛成一份摘要事件，之后的每轮以
-  // 「[会话摘要] + 未覆盖轮次」开工（见 loadHistory）。
-  //
-  // 三条边界（比实现重要）：
-  //   ① 只在**空闲**时可压缩：忙碌时抛错——压缩读的是「当时的事实」。
-  //      through_seq 取**入口快照**（readAll 的最后一条 seq），不是摘要返回后的 last_seq：
-  //      摘要往返的窗口里若起跑了新轮（输入框按 D15 保持可用），它的 seq 必然 > through_seq，
-  //      于是保持「未覆盖」——照常进上下文、进下一次压缩，绝不出现「摘要缺了正在说的这一轮」
-  //      还被盖进覆盖范围的假账。
-  //   ② 压缩看的是**全部**未覆盖轮次（含超出预算会被丢的那些）：预算在这里不设限，
-  //      这正是压缩存在的意义——丢掉的轮子在丢之前被收进摘要。
-  //   ③ 只做**手动**压缩：自动压缩牵扯安全点与触发时机，CLI 先不背这份复杂度
-  //      （与上游的差异已记录在案：不必事事对齐）。摘要只经 digest_compacted
-  //      一条事件进日志，绝不伪装成对话轮次。
-  async function compact() {
+  // 手动压全部已往对话；自动压缩在新轮开跑前进行，并尽量保留近期完整原文。
+  // 覆盖边界来自入口快照，压缩期间的新输入永不算进已覆盖部分。
+  async function compact({ automatic = false, currentInputId = null, room = null, signal = null } = {}) {
     const handle = requireOpen('压缩会话');
-    if (isBusy()) throw new Error('正在运行，等这一轮结束再压缩。');
+    if (!automatic && isBusy()) throw new Error('正在运行，等这一轮结束再压缩。');
     const { events } = await handle.eventStore.readAll();
     const turns = projectTurns(events);
     const digest = latestDigest(events);
-    const uncovered = digest === null
+    const prior = digest === null
       ? turns
       : turns.filter((turn) => Number.isFinite(turn.startSeq) && turn.startSeq > digest.throughSeq);
+    let uncovered = prior.filter((turn) => turn.inputId !== currentInputId || currentInputId === null);
     if (uncovered.length === 0) return { status: 'empty' };
+    let throughSeq = events.length > 0 ? events.at(-1).seq : 0;
+    if (automatic) {
+      // 留下窗口约四分之一的最近完整轮次；单轮本身超窗时也先压缩，不截半章。
+      let keepFrom = uncovered.length;
+      let recentChars = 0;
+      while (keepFrom > 1) {
+        const cost = estimateTurnsChars([uncovered[keepFrom - 1]]);
+        if (recentChars + cost > room / 4) break;
+        recentChars += cost;
+        keepFrom -= 1;
+      }
+      const selected = uncovered.slice(0, keepFrom);
+      const next = turns.find((turn) => turn.startSeq > selected.at(-1).startSeq);
+      throughSeq = next ? next.startSeq - 1 : throughSeq;
+      uncovered = selected;
+    }
     // 已有摘要作为对话的第一条一起送压：新摘要吸收旧摘要，层层滚动向前。
     const transcript = buildHistoryMessages(uncovered, {
       budgetChars: Number.MAX_SAFE_INTEGER,
       digest: digest === null ? null : buildDigestMessage(digest.text),
     }).messages;
-    const text = await runCompaction({ modelClient, messages: transcript });
-    // 入口快照：uncovered 与摘要正文都来自这份 events，through_seq 必须与它们同一时刻，
-    // 而不是摘要返回后的 last_seq——后者会把摘要窗口里起跑的轮次错误地盖进「已覆盖」。
-    const throughSeq = events.length > 0 ? events.at(-1).seq : 0;
-    await serializeWrite(() => handle.append({
-      type: 'digest_compacted',
-      // covered_total = 摘要生效时被覆盖的轮次总数（= 当时全部轮次，through_seq 之前的一切）。
-      // loadHistory 的有界读据此出「摘要覆盖 N 轮」，无需回读更早的摘要事件求和（规格 D4）。
-      data: {
-        digest: text, through_seq: throughSeq, chars: text.length,
-        covered_turns: uncovered.length, covered_total: turns.length,
-      },
-    }));
+    const text = await runCompaction({ modelClient, messages: transcript, signal });
+    if (automatic && estimateChars([buildDigestMessage(text)]) + estimateTurnsChars(prior.filter((turn) => turn.startSeq > throughSeq && turn.inputId !== currentInputId)) > room) {
+      throw new Error('压缩后仍超出模型窗口，会话保持原样。');
+    }
+    await serializeWrite(() => {
+      if (signal?.aborted) throw Object.assign(new Error('已停止压缩。'), { code: 'MODEL_ABORTED' });
+      return handle.append({
+        type: 'digest_compacted',
+        // 覆盖数来自入口快照，自动压缩未覆盖的近期轮次仍按原文装入。
+        data: {
+          digest: text, through_seq: throughSeq, chars: text.length,
+          covered_turns: uncovered.length, covered_total: turns.filter((turn) => turn.startSeq <= throughSeq).length,
+        },
+      });
+    });
     return { status: 'ok', chars: text.length, turns: uncovered.length };
   }
 

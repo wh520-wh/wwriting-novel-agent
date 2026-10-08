@@ -6,13 +6,13 @@
 
 **把长篇小说写作当作工程来管理的本地桌面智能体**
 
-模型真的读写你的文件 · 每一步可验证 · 数据不出本机
+模型真的读写你的文件 · 每一步可验证 · 作品与历史本地保存
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/wh520-wh/wwriting-novel-agent?color=green)](https://github.com/wh520-wh/wwriting-novel-agent/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)](#快速开始)
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](package.json)
-[![Tests](https://img.shields.io/badge/tests-2039%20passing-success)](#开发与验证)
+[![Tests](https://img.shields.io/badge/tests-Node%20test-blue)](#开发与验证)
 [![Stars](https://img.shields.io/github/stars/wh520-wh/wwriting-novel-agent?style=social)](https://github.com/wh520-wh/wwriting-novel-agent/stargazers)
 
 [English](README.en.md) · **简体中文**
@@ -33,7 +33,7 @@ WWriting **不是**「你描述、它代写」的生成器。
 
 你随时能看到模型正在做什么。中断了可以从断点继续。写完的每一章，都是你文件夹里真实存在的 Markdown 文件——不是聊天窗口里一段需要你自己复制的文本。
 
-> **数据在你手里，交付可验证。**
+> **文件由你掌握，交付可验证。** 模型请求会把所需对话和文件内容发送到你配置的供应商。
 
 <img src="docs/images/agent-working.png" width="880" alt="Agent 完成一次写作任务：写入章节、调用字数工具、更新项目记忆">
 
@@ -47,10 +47,10 @@ WWriting **不是**「你描述、它代写」的生成器。
 | **篇幅要求** | 模型自己说「大约 2000 字」 | 模型调用 `count_text` 拿客观字数再决定补写或收尾 |
 | **上下文** | 满了就报错或悄悄截断 | 压缩过程可见、可手动取消，优先驱逐大工具输出 |
 | **成本** | 不透明 | 逐次记录 token、模型调用与成本估算 |
-| **数据** | 上传第三方云端 | 全部留在本机，应用私有历史不进入你的创作文件夹 |
+| **数据** | 作品依赖平台存储 | 作品、历史和配置本地保存；模型请求发送至所选供应商 |
 | **权限** | 全有或全无 | 只读自动 / 副作用确认 / 本条输入授权 / YOLO / 极端操作精确确认文字 |
 | **版本** | 无 | 章节与记忆自动快照，时间线面板可查看并恢复任意版本 |
-| **可验证性** | 靠感觉 | 1992 个测试 + 完整本地验收链路 |
+| **可验证性** | 靠感觉 | 行为测试 + 本地验收链路，结果按日期与范围记录 |
 
 ## 核心能力
 
@@ -78,8 +78,8 @@ WWriting **不是**「你描述、它代写」的生成器。
 ### 模型与安全
 
 - **供应商 / 模型两级管理**：设置页内新增、启停、设默认、删除，支持拉取模型列表与行内连接测试；预设 DeepSeek 官方、小米 MiMo 官方，兼容任意 OpenAI 兼容网关。
-- **API Key 只在本机**，不写入创作文件夹，项目配置里只记录环境变量名。
-- **默认禁网**；网页来源标记为「不可信资料」，不作为系统指令执行。
+- **API Key 本地保存**，不写入创作文件夹；请求时用于向所选供应商鉴权。
+- **资料工具的网络权限默认关闭**；模型请求使用配置的供应商，网页来源标记为「不可信资料」，不作为系统指令执行。
 - **权限分级**：普通模式自动执行只读操作，副作用操作需确认；同类授权只对当前这条输入生效；YOLO 跳过普通确认；极端危险操作**始终**要求用户输入当前给出的精确确认文字，模型与 YOLO 都不能代填。
 
 ## 快速开始
@@ -129,14 +129,14 @@ SETTING.md     # 可选：世界观与设定
 
 - `WWRITING.md` 是每个长期工作区的记忆入口，**不是**聊天数据库，也不是第二份总纲。你可以查看和手工编辑它。
 - 删掉它表示你要求 Agent 重新建立记忆，不表示该目录不再是工作区。
-- 旧版本项目遗留的 `agent_state.json`、`task_queue.json` 等文件只在首次打开时被**一次性只读迁移**，之后不再写入，原文件保留不删。
+- 旧版本遗留文件保留原样；旧聊天状态的自动导入已退役，不把它们当作当前对话历史来源。
 
 ## 开发与验证
 
 这个项目把「可验证」当成产品的一部分，而不是口号：
 
 ```powershell
-npm test                        # 2039 个单元/集成测试
+npm test                        # 桌面端单元与集成测试（不含 CLI）
 npm run verify:local            # 完整本地验收（含打包，较慢）
 npm run verify:app-clickability # 真实 Electron 窗口逐项点击关键按钮（界面外壳门禁）
 npm run verify:desktop-shell    # Electron 安全开关、中文菜单、打包配置
@@ -147,7 +147,7 @@ npm run sim:user-flow           # 用户流程全链路模拟
 
 连「按钮看得到但点不动」这类 UI 回归都有真实 Electron 点击防线。
 
-> 统计基线：记录于 2026-09-28｜状态：当前有效｜依据：`npm test` 实跑（2039/2039，exit 0，HEAD 0c84603）。
+> 记录于：2026-10-08｜状态：当前有效｜依据：两端 `package.json` 与验证日志。最新验证日期、范围、失败项统一记录在[项目状态](docs/memory/project-progress.md#当前状态)，README 不重复维护测试数量。根目录测试不包含 [CLI](WWriting%20cli/README.md)，两端需分别检查。
 
 ## 目录结构
 
@@ -190,8 +190,12 @@ docs/adr/                 # 架构决策记录
 | --- | --- |
 | [更新日志](CHANGELOG.md) | 每个版本的变更明细与修复项 |
 | [完整使用教程](docs/USER_GUIDE.zh-CN.md) | 桌面端逐步操作说明：工作区、对话、权限、导出 |
-| [架构决策记录](docs/adr/) | 8 份 ADR，逐条记录关键设计取舍与取舍理由 |
+| [架构决策记录](docs/adr/) | 关键设计取舍及其理由，按相关主题查阅 |
 | [统一行为规格书](docs/design/统一行为规格书.md) | 对话面 / Agent 内核 / 多会话的唯一现行行为契约（行为改动只改它） |
+| [项目状态与记忆](docs/memory/project-progress.md#当前状态) | 最新验证、已确认待办与历史轮次；继续工作先读顶部 |
+| [文档索引](docs/design/README.md) | 文档入口及现行契约与历史资料的分工 |
+| [领域词汇](CONTEXT.md) | 产品术语；不承担进度或行为规格 |
+| [CLI 使用说明](WWriting%20cli/README.md) | 终端版的运行方式、能力和独立验证 |
 | [贡献指南](CONTRIBUTING.md) | 环境要求、开发命令、提交规范、PR 流程 |
 | [安全策略](SECURITY.md) | 漏洞披露渠道，以及本项目的安全边界与非漏洞清单 |
 | [English README](README.en.md) | 英文版说明 |

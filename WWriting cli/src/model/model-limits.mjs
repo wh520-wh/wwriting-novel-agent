@@ -1,8 +1,7 @@
 // 每模型的上下文窗口与输出上限。
 //
 // 为什么需要它：① 用户要求 max_tokens「给足空间」——取模型的最大输出上限，而不是让服务端
-// 用一个随时会漂移的默认值；② 上下文窗口是将来做历史预算/自动压缩时要读的事实，
-// 现在先集中记一处，避免各处各写一个魔数。
+// 用一个随时会漂移的默认值；② 历史装配和自动压缩复用同一份窗口事实。
 //
 // **不实测**（2026-09-29 用户决定，取代原计划的一次性探针）：取值来自 DeepSeek 官方 API 文档
 // 与用户拍板，写死在表里。判据仍是「（端点, 模型名）二元组」——网关下的同名模型一律走保守回落，
@@ -40,4 +39,9 @@ export function resolveModelLimits({ baseUrl, model } = {}) {
     maxOutputTokens: FALLBACK_MAX_OUTPUT_TOKENS,
     source: 'fallback',
   };
+}
+
+// ponytail: 按中文每字符约一 token 估算，预留输出上限与 10% 误差；有 tokenizer 再换精确计数。
+export function inputBudgetChars(limits = resolveModelLimits()) {
+  return Math.max(1, Math.floor((limits.contextWindow - limits.maxOutputTokens) * 0.9));
 }

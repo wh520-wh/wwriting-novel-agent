@@ -119,10 +119,15 @@ export async function main(
   // 读不出按空历史降级，写失败静默——历史是增强，不值得让对话面为它分心。
   const inputHistoryFile = path.join(workspaceStore.directoryFor(projectRoot, 'workspace'), 'input-history.jsonl');
   const seedHistory = await loadInputHistory({ file: inputHistoryFile });
-  let lastRecordedInput = null;
-  async function recordInputHistory(text) {
-    const recorded = await recordInput({ file: inputHistoryFile, text, previous: lastRecordedInput });
-    if (recorded) lastRecordedInput = text;
+  let lastRecordedInput = seedHistory.at(-1) ?? null;
+  let historyWrite = Promise.resolve();
+  function recordInputHistory(text) {
+    // 追加与压缩按提交顺序完成，快速连续输入不能互相覆盖。
+    historyWrite = historyWrite.then(async () => {
+      const recorded = await recordInput({ file: inputHistoryFile, text, previous: lastRecordedInput });
+      if (recorded) lastRecordedInput = text;
+    });
+    return historyWrite;
   }
 
   // @文件引用的文件清单（规格 2026-10-07 T5/D16）：启动扫一遍，之后每次提交后刷新
@@ -130,7 +135,7 @@ export async function main(
   let fileSuggestions = [];
   async function refreshFileSuggestions() {
     try {
-      fileSuggestions = await listRelativeFiles(projectRoot);
+      fileSuggestions = (await listRelativeFiles(projectRoot)).map((path) => ({ path }));
     } catch {
       fileSuggestions = [];
     }
@@ -233,6 +238,10 @@ export async function main(
   });
 
   const modelClient = {
+    async getLimits() {
+      const config = await loadModelConfig({ configPath, env: io.env });
+      return createDeepSeekClient({ config }).getLimits();
+    },
     streamChat(options) {
       return loadModelConfig({ configPath, env: io.env }).then((config) => {
         // 档位在**组请求这一刻**才解析：/effort 改的是 effortState，下一轮自然带上新值，
@@ -293,12 +302,7 @@ export async function main(
   }
   let configState = await readConfigState();
 
-  // 历史预算只在这里取**一次**，然后同时喂给控制器（模型记忆）与屏幕重演。
-  //
-  // 为什么是同一个变量而不是两处各取默认（P25）：两边都用 `DEFAULT_HISTORY_BUDGET_CHARS`
-  // 只是**今天恰好相等**——一旦将来有人把自定义预算接进 createRunController（那是它的公开参数），
-  // 屏幕上重演的轮次与模型记得的轮次就会静默分叉，而分叉的方向是「模型记得、屏幕看不到」（P26）。
-  // 判据只有一处定义，这与 renderer.mjs 的「判断不复制」是同一条要求。
+  // 默认完整装配与重演；控制器每轮另按当前模型窗口判定是否自动压缩。
   const historyBudgetChars = DEFAULT_HISTORY_BUDGET_CHARS;
 
   // 打开会话即取写锁：会话被占用、工作区不可写、日志损坏都在这里收敛成一条中文事实。
@@ -552,9 +556,10 @@ export async function main(
       return picked === null ? null : picked.item.id;
     },
     // 退出清理属于生命周期，只在这个回调里收尾：/quit 已经保证 stop() → close() 在前。
-    quit: () => {
+    quit: async () => {
       renderer.close();
       input.stop();
+      await historyWrite;
       finish(EXIT_OK);
     },
     // 非交互时不跑对话循环（见下），所以这里不存在「readline 没回显、需要我们补用户行」的情形。

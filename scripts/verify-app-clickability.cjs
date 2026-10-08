@@ -8,7 +8,7 @@
 //
 // 点击机制：本会话不投递真实指针事件（sendInputEvent/CDP Input 均无 click），
 // 采用合成 el.click() + elementFromPoint 中心命中测试（见 clickAndRead 注释）。
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, ipcMain } = require("electron");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -31,6 +31,11 @@ app.commandLine.appendSwitch("disable-gpu");
 app.commandLine.appendSwitch("disable-gpu-sandbox");
 app.commandLine.appendSwitch("disable-http-cache");
 app.commandLine.appendSwitch("force-prefers-reduced-motion");
+// 本脚本独立创建窗口，需要接上 preload 使用的主题 IPC。
+ipcMain.handle("wwriting:set-title-bar-theme", (event, dark) => {
+  const overlay = desktopWindowChrome(process.platform, dark).titleBarOverlay;
+  if (overlay) BrowserWindow.fromWebContents(event.sender)?.setTitleBarOverlay(overlay);
+});
 
 app.whenReady().then(() => main().catch((error) => {
   console.error(error?.stack || error);
@@ -462,6 +467,26 @@ async function main() {
         text: button.textContent.trim().replace(/\\s+/gu, " ").slice(0, 40)
       }))
   `);
+  // 窄窗口仍能发送，权限菜单不被工具栏的 overflow 裁掉。
+  win.setContentSize(390, 844);
+  await delay(250);
+  assert.equal(await read(win, `(() => {
+    const send = document.querySelector('[data-testid="agent-send"]');
+    const rect = send.getBoundingClientRect();
+    return rect.right <= innerWidth && rect.bottom <= innerHeight
+      && send.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2));
+  })()`), true, "窄窗口发送按钮必须位于视口内且可点击");
+  clicks.push(await clickAndRead(win, '[data-testid="agent-permission-select"]', {
+    label: "narrow-permission-menu",
+    expect: () => read(win, "document.querySelector('[data-testid=agent-permission-menu]').hidden === false")
+  }));
+  assert.equal(await read(win, `(() => {
+    const menu = document.querySelector('[data-testid="agent-permission-menu"]');
+    const rect = menu.getBoundingClientRect();
+    return rect.left >= 0 && rect.right <= innerWidth
+      && menu.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + 18));
+  })()`), true, "窄窗口权限菜单必须完整显示并可点击");
+
   const result = {
     ok: clicks.every((click) => click.clicked && click.expectationPassed && click.errors.length === 0),
     projectRoot,

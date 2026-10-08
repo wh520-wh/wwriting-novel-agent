@@ -17,11 +17,9 @@
 import { terminalOfEvent } from './event-facts.mjs';
 import { summarizeToolResult } from '../tools/tool-summary.mjs';
 
-// 历史预算（字符数，不是 token）。默认 24000 字符：
-// 中文正文约 1 字符 ≈ 1 token 量级，这个量级既容得下前面几章的上下文，
-// 又给当轮输出与系统提示留足空间。**这是估算值，不与模型自报的 token 数混用**——
-// 精确计数需要 tokenizer，本项目不引第三方依赖。
-export const DEFAULT_HISTORY_BUDGET_CHARS = 24000;
+// 默认保留全部可见历史；模型窗口检查与自动压缩由运行入口负责。
+// 显式预算仅供有界回放等调用方使用，不再用固定小窗口裁掉作者的前情。
+export const DEFAULT_HISTORY_BUDGET_CHARS = Number.MAX_SAFE_INTEGER;
 
 // 一轮里单个工具调用的上下文陈述。只带名字、目标与结果摘要，
 // **不带参数原文与工具输出正文**：那不是对话上下文，那是把整章正文重灌一遍。

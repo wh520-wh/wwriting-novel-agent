@@ -21,10 +21,8 @@ import path from 'node:path';
 
 export const PROJECT_MEMORY_FILE = 'WWRITING.md';
 
-// 注入上限（字符数）。**独立于** DEFAULT_HISTORY_BUDGET_CHARS（24000）——那是会话历史的预算，
-// 这是记忆的预算，两件事不该共用一个旋钮。
-// 取 8000 的理由：WWRITING.md 是**索引**不是正文。8000 字已经能写下很长的要求清单；
-// 它真要大，正确做法是它指向的外面那些文件（OUTLINE.md / SETTING.md）变大，而不是它自己变大。
+// 显式有界注入的兼容默认值。运行控制器完整注入项目记忆，统一按模型窗口检查，
+// 不再把文件裁成 8000 字符；保留此值供明确要求有界注入的调用方使用。
 export const PROJECT_MEMORY_BUDGET_CHARS = 8000;
 
 // ADR-0008：作为**带标记的独立合成消息**注入，不塞进 system prompt。

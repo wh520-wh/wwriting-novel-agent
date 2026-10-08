@@ -16,8 +16,9 @@
 import { randomUUID } from 'node:crypto';
 
 import { fact } from '../fact.mjs';
-import { DEFAULT_HISTORY_BUDGET_CHARS, estimateChars } from './history.mjs';
+import { estimateChars } from './history.mjs';
 import { PROJECT_MEMORY_SKELETON } from './project-memory.mjs';
+import { fitContext } from './compact.mjs';
 // 工具的静态事实（schema / 方法名 / 标签）只有 tools/tool-catalog.mjs 一处定义；
 // 本文件只消费给模型的两个视图，不再自己养一份平行表。
 import { TOOL_METHODS, TOOL_SCHEMAS } from '../tools/tool-catalog.mjs';
@@ -163,7 +164,6 @@ class AgentLimitError extends Error {
 //                这样写入确认能带上 run_id 落进事件日志。生产路径（run-controller）走这一个；
 //                直接传 tools 时权限确认不经过循环，不会产生 decision_pending / decision_resolved 事件。
 //   permissions  真实权限状态：Run 开始 beginInput，结束 / 中断 / 输入切换 clearInput（硬要求）。
-//   historyBudgetChars 会话历史预算（字符数），初值来自 history.mjs 的 DEFAULT_HISTORY_BUDGET_CHARS。
 //                循环自己不截断——截断是 history.mjs 纯函数的职责；这里持有它只是为了
 //                「不传 historyMeta 时按同一口径算出 chars」这一个用途，不做第二处判断。
 //   skillCatalog 本轮生效的技能摘要数组（[{name, description, category}]，见 run-controller
@@ -179,10 +179,10 @@ export function createAgentLoop({
   clock = Date.now,
   idFactory = randomUUID,
   maxToolRounds = DEFAULT_MAX_TOOL_ROUNDS,
-  historyBudgetChars = DEFAULT_HISTORY_BUDGET_CHARS,
   systemPrompt = DEFAULT_SYSTEM_PROMPT,
   skillCatalog = null,
   onReasoningPreview = null,
+  onCompact = null,
 } = {}) {
   if (!modelClient || typeof modelClient.streamChat !== 'function') {
     throw new Error('Agent 循环需要可用的模型客户端。');
@@ -194,14 +194,9 @@ export function createAgentLoop({
     throw new Error('Agent 循环需要文件工具（tools）或工具工厂（toolsFactory）。');
   }
   const roundLimit = Number.isInteger(maxToolRounds) && maxToolRounds > 0 ? maxToolRounds : DEFAULT_MAX_TOOL_ROUNDS;
-  // 预算只是校验用的下界（非法值退回默认），截断本身不在这里发生。
-  const historyBudget = Number.isFinite(historyBudgetChars) && historyBudgetChars > 0
-    ? Math.floor(historyBudgetChars)
-    : DEFAULT_HISTORY_BUDGET_CHARS;
-
   const hasPermissions = Boolean(permissions && typeof permissions.request === 'function');
 
-  // history 的形态就是 buildHistoryMessages(...).messages：已截断好的扁平数组。
+  // history 的形态就是 buildHistoryMessages(...).messages：完整装配的扁平数组。
   // historyMeta 可选（{ keptTurns, truncatedTurns, chars }）；不传时按同一口径自算：
   //   chars = estimateChars(history)，kept_turns = role==='user' 的条数，truncated_turns = 0
   // 自算出来的 truncated_turns 只是「没告诉我」的如实呈现，绝不猜一个非零值出来。
@@ -384,6 +379,7 @@ export function createAgentLoop({
       const turnStartedAt = new Date(clock()).toISOString();
 
       try {
+        await fitContext({ modelClient, messages, tools: TOOL_SCHEMAS, signal, onCompact, prefixLength: memoryMessage === null ? 1 : 2 });
         await modelClient.streamChat({
           messages,
           tools: TOOL_SCHEMAS,

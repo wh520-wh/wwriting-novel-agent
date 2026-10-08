@@ -6,13 +6,13 @@
 
 **A local-first desktop agent that manages long-form novel writing like an engineering project**
 
-The agent actually reads and writes your files · Every step is verifiable · Your data never leaves your machine
+The agent actually reads and writes your files · Every step is verifiable · Works and history are stored locally
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/wh520-wh/wwriting-novel-agent?color=green)](https://github.com/wh520-wh/wwriting-novel-agent/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)](#quick-start)
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](package.json)
-[![Tests](https://img.shields.io/badge/tests-2039%20passing-success)](#development--verification)
+[![Tests](https://img.shields.io/badge/tests-Node%20test-blue)](#development--verification)
 [![Stars](https://img.shields.io/github/stars/wh520-wh/wwriting-novel-agent?style=social)](https://github.com/wh520-wh/wwriting-novel-agent/stargazers)
 
 **English** · [简体中文](README.md)
@@ -33,7 +33,7 @@ It is a desktop writing workbench: **open any folder and start chatting**. The a
 
 You can watch what the agent is doing at any moment. Interrupt it and it resumes from the breakpoint. Every finished chapter is a real Markdown file in your folder — not text in a chat window that you still have to copy out yourself.
 
-> **Your data stays on your machine. Delivery is verifiable.**
+> **You control your files. Delivery is verifiable.** Model requests send the required conversation and file content to your configured provider.
 
 <img src="docs/images/agent-working.png" width="880" alt="The agent finishing a writing task: writing a chapter, calling the word-count tool, updating project memory">
 
@@ -47,10 +47,10 @@ You can watch what the agent is doing at any moment. Interrupt it and it resumes
 | **Length requirements** | The model claims "about 2,000 words" | The model calls `count_text` for an objective count, then decides to extend, trim, or finish |
 | **Context** | Errors out or silently truncates | Compaction is visible and cancellable, evicting large tool outputs first |
 | **Cost** | Opaque | Per-call tokens, model calls, and cost estimates recorded |
-| **Data** | Uploaded to a third-party cloud | Stays entirely on your machine; app-private history never enters your writing folder |
+| **Data** | Works depend on platform storage | Works, history, and configuration are stored locally; model requests go to the selected provider |
 | **Permissions** | All or nothing | Read-only auto / confirm side effects / per-input grants / YOLO / exact confirmation text for extreme actions |
 | **Versions** | None | Automatic snapshots of chapters and memory, with a timeline panel to view and restore any version |
-| **Verifiability** | Vibes | 2,039 tests plus a full local acceptance suite |
+| **Verifiability** | Vibes | Behavior tests and local acceptance, with results dated and scoped |
 
 ## Core capabilities
 
@@ -78,8 +78,8 @@ You can watch what the agent is doing at any moment. Interrupt it and it resumes
 ### Models and safety
 
 - **Two-level provider/model management**: add, enable/disable, set default, and delete from the settings page, with model-list pull and inline connection tests; presets for official DeepSeek and Xiaomi MiMo, and any OpenAI-compatible gateway works.
-- **API keys stay on your machine** — never written into the writing folder; project config only records environment-variable names.
-- **Offline by default**; fetched web sources are snapshotted as untrusted material and never executed as instructions.
+- **API keys are stored locally** — never in the writing folder, and sent to the selected provider for request authentication.
+- **Research tools disable network access by default**; model requests use the configured provider, and fetched web sources are treated as untrusted material rather than instructions.
 - **Tiered permissions**: read-only operations auto-execute while side effects require confirmation; per-input grants apply only to the current message; YOLO skips ordinary confirmations; extreme actions **always** require the user to type the exact confirmation text — neither the model nor YOLO can fill it in.
 
 ## Quick start
@@ -129,14 +129,14 @@ SETTING.md     # Optional: world and settings
 
 - `WWRITING.md` is the memory entry point for long-lived workspaces — **not** a chat database and not a second outline. You can read and edit it by hand.
 - Deleting it tells the agent to rebuild its memory; it does not mean the folder is no longer a workspace.
-- Legacy files such as `agent_state.json` and `task_queue.json` are imported **once, read-only** on first open, then never written again; the originals are left untouched.
+- Legacy files are left untouched. Automatic import of old chat state has been retired; those files are not a source of current conversation history.
 
 ## Development & verification
 
 This project treats verifiability as part of the product, not a slogan:
 
 ```powershell
-npm test                        # 2,039 unit/integration tests
+npm test                        # desktop unit/integration tests (excludes the CLI)
 npm run verify:local            # full local acceptance (includes packaging; slow)
 npm run verify:app-clickability # real Electron window clicking every key button
 npm run verify:desktop-shell    # Electron security switches, menus, packaging config
@@ -147,7 +147,7 @@ npm run sim:user-flow           # end-to-end user-flow simulation
 
 Even UI regressions like "button visible but unclickable" are caught by a real Electron click-through harness.
 
-> Statistics baseline: recorded 2026-09-28 | status: current | source: `npm test` run (2039/2039, exit 0, HEAD 0c84603).
+> Recorded 2026-10-08 | status: current | source: both package manifests and verification logs. Verification dates, scope, and failures are maintained in [project status](docs/memory/project-progress.md#当前状态); this README does not duplicate test counts. Root tests exclude the [CLI](WWriting%20cli/README.md), which is checked separately.
 
 ## Repository layout
 
@@ -190,8 +190,12 @@ For security issues, report privately per [SECURITY.md](SECURITY.md) instead of 
 | --- | --- |
 | [Changelog](CHANGELOG.md) | Per-release changes and fixes |
 | [Full user guide](docs/USER_GUIDE.zh-CN.md) | Step-by-step desktop walkthrough: workspaces, chat, permissions, export |
-| [Architecture decision records](docs/adr/) | 8 ADRs recording each key design trade-off and why it was made |
+| [Architecture decision records](docs/adr/) | Key design trade-offs and their reasons, organized by topic |
 | [Unified behavior spec](docs/design/统一行为规格书.md) | The single current behavior contract for the chat surface, agent kernel, and multi-session (behavior changes only touch this file) |
+| [Project status and memory](docs/memory/project-progress.md#当前状态) | Latest checks, confirmed follow-ups, and historical rounds; read the top first |
+| [Documentation index](docs/design/README.md) | Entry points and the boundary between current contracts and historical material |
+| [Domain glossary](CONTEXT.md) | Product terms, separate from progress and behavior specifications |
+| [CLI guide](WWriting%20cli/README.md) | Terminal usage, capabilities, and independent verification |
 | [Contributing guide](CONTRIBUTING.md) | Requirements, dev commands, commit conventions, PR flow |
 | [Security policy](SECURITY.md) | How to report vulnerabilities, plus this project's security boundaries and non-issues |
 | [中文 README](README.md) | Chinese documentation |

@@ -133,6 +133,8 @@ test('fileMenu：@ 触发不要求前面是空白、@ 与光标间无空白、�
 
   const ascii = fileMenu({ line: '@outline', cursor: 8, files: FILES });
   assert.deepEqual(ascii.matches.map((item) => item.path), ['OUTLINE.md'], '大小写不敏感');
+  assert.deepEqual(fileMenu({ line: '@OUTLINE', files: FILES }).matches.map((item) => item.path), ['OUTLINE.md']);
+  assert.deepEqual(fileMenu({ line: '@OuTlInE', files: [{ path: 'outline.md' }] }).matches.map((item) => item.path), ['outline.md']);
 
   const none = fileMenu({ line: '写第一章', cursor: 4, files: FILES });
   assert.equal(none.open, false, '没有 @ 不触发');

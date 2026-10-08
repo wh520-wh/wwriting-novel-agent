@@ -62,7 +62,32 @@ test('record：超上限后加载只留尾部，文件被压缩重写', async ()
   // 压缩后文件里不再有多余的行（重写而不是只截视图）。
   const raw = await fs.readFile(file, 'utf8');
   assert.equal(raw.trim().split('\n').length, cap);
+  assert.equal(JSON.parse(raw.trim().split('\n')[0]).at, '1970-01-01T00:00:03.000Z', '压缩保留记录时刻');
   assert.equal(INPUT_HISTORY_CAP, 500, '默认上限是 500（契约钉住）');
+});
+
+test('load：启动即压缩超限文件，保留最新原文和原时间戳', async () => {
+  const root = await makeTempRoot('wwriting-hist-start-cap-');
+  const file = path.join(root, 'history.jsonl');
+  const entries = Array.from({ length: 501 }, (_, i) => ({ at: new Date(i * 1000).toISOString(), text: `输入-${i}` }));
+  await fs.writeFile(file, `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`);
+  assert.deepEqual(await loadInputHistory({ file }), entries.slice(1).map((entry) => entry.text));
+  const saved = (await fs.readFile(file, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.deepEqual(saved, entries.slice(1));
+  assert.deepEqual(await fs.readdir(root), ['history.jsonl'], '成功压缩不留临时文件');
+});
+
+test('load：压缩写入或替换失败仍可读尾部，原文件不丢，临时文件清理', async () => {
+  const root = await makeTempRoot('wwriting-hist-compact-fail-');
+  const file = path.join(root, 'history.jsonl');
+  const original = [0, 1, 2].map((i) => JSON.stringify({ at: new Date(i).toISOString(), text: `输入-${i}` })).join('\n') + '\n';
+  await fs.writeFile(file, original);
+  for (const operation of ['writeFile', 'rename']) {
+    const failing = { ...fs, [operation]: async () => { throw new Error('EPERM'); } };
+    assert.deepEqual(await loadInputHistory({ file, cap: 2, fsImpl: failing }), ['输入-1', '输入-2']);
+    assert.equal(await fs.readFile(file, 'utf8'), original, `${operation} 失败不改旧历史`);
+    assert.deepEqual(await fs.readdir(root), ['history.jsonl']);
+  }
 });
 
 test('record：写失败静默返回 false，绝不抛到对话面', async () => {

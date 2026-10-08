@@ -438,7 +438,7 @@ export function createInputReader({
           return;
         }
       }
-      if (key && menuOpen() && key.name === 'escape') {
+      if (key && key.name === 'escape' && (menuMode === 'history' || menuOpen())) {
         if (menuMode === 'history') {
           // 历史搜索的 Esc = 退出搜索模式本身（D13，不带回）；草稿原样保留，
           // 菜单按「行内容一变即重开」的同一纪律解封。

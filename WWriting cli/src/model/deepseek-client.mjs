@@ -254,7 +254,7 @@ export function createDeepSeekClient({ fetchImpl = globalThis.fetch, config = {}
     if (effortFields !== null) Object.assign(payload, effortFields);
     if (Array.isArray(tools) && tools.length > 0) payload.tools = tools;
     // max_tokens 给足空间（Task 8）：取该模型的输出上限，而不是赌服务端默认
-    // （默认值按时间窗/档位漂移）。上下文窗口一并由 model-limits.mjs 记录，供将来做历史预算。
+    // （默认值按时间窗/档位漂移）。历史和压缩通过 getLimits 读取同一份窗口记录。
     payload.max_tokens = resolveModelLimits({ baseUrl: config.baseUrl, model }).maxOutputTokens;
 
     const startedAt = clock();
@@ -431,5 +431,5 @@ export function createDeepSeekClient({ fetchImpl = globalThis.fetch, config = {}
     return { text, toolCalls, usage, finishReason, durationMs: Math.max(0, clock() - startedAt) };
   }
 
-  return { streamChat, listModels };
+  return { streamChat, listModels, getLimits: () => resolveModelLimits({ baseUrl, model }) };
 }

@@ -15,17 +15,22 @@ test("Windows uses an integrated title bar while other platforms keep native def
   assert.deepEqual(desktopWindowChrome("linux"), {});
   assert.deepEqual(desktopWindowChrome("win32", false), {
     titleBarStyle: "hidden",
-    titleBarOverlay: { color: "#ffffff", symbolColor: "#24211c", height: 34 }
+    titleBarOverlay: { color: "#fafbfc", symbolColor: "#202522", height: 34 }
   });
   assert.deepEqual(desktopWindowChrome("win32", true), {
     titleBarStyle: "hidden",
-    titleBarOverlay: { color: "#191713", symbolColor: "#ede6d6", height: 34 }
+    titleBarOverlay: { color: "#16181a", symbolColor: "#eef2ef", height: 34 }
   });
 });
 
-test("window color tokens: light is #ffffff, dark stays #191713", () => {
-  assert.equal(WINDOW_COLORS.light.background, "#ffffff");
-  assert.equal(WINDOW_COLORS.dark.background, "#191713");
+test("native title bar follows the app canvas and text in both themes", () => {
+  const css = fs.readFileSync(path.join(desktopDir, "../app-shell/styles.css"), "utf8");
+  const light = css.match(/:root\s*\{([^}]+)\}/u)?.[1];
+  const dark = css.match(/:root\[data-theme="dark"\]\s*\{([^}]+)\}/u)?.[1];
+  for (const [theme, block] of [["light", light], ["dark", dark]]) {
+    assert.equal(WINDOW_COLORS[theme].background, block.match(/--bg:\s*([^;]+);/u)?.[1]);
+    assert.equal(WINDOW_COLORS[theme].symbol, block.match(/--ink:\s*([^;]+);/u)?.[1]);
+  }
   assert.equal(windowColors(false), WINDOW_COLORS.light);
   assert.equal(windowColors(true), WINDOW_COLORS.dark);
 });
@@ -39,7 +44,7 @@ test("electron-main and window-chrome consume the shared window-colors token mod
   assert.match(chromeSource, /require\("\.\/window-colors\.cjs"\)/u);
 
   // 消费方内不得再出现硬编码的窗口材料色（token 只许在 window-colors.cjs 中定义）。
-  for (const hex of ["#f4f3f0", "#191713", "#ede6d6", "#24211c"]) {
+  for (const hex of [...Object.values(WINDOW_COLORS).flatMap(Object.values), "#f4f3f0", "#191713", "#ede6d6", "#24211c"]) {
     assert.ok(!mainSource.includes(hex), `electron-main.cjs must not hardcode ${hex}`);
     assert.ok(!chromeSource.includes(hex), `window-chrome.cjs must not hardcode ${hex}`);
   }

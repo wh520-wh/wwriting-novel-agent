@@ -922,7 +922,7 @@ test('历史读取抛错：该轮仍正常跑完（不判失败），并有降�
   }
 });
 
-test('超长历史：送模型的 messages 在预算内，history_applied.truncated_turns > 0', async () => {
+test('超过旧 24000 字符的历史完整送入模型，早期章节不被省略', async () => {
   const root = await makeTempRoot('wwriting-ctrl-history-budget-');
   const projectRoot = path.join(root, 'novel');
   // 每轮 9000 字正文：跑满 4 轮就已超过 24000 字符预算。
@@ -936,13 +936,14 @@ test('超长历史：送模型的 messages 在预算内，history_applied.trunca
     }
     const sent = model.calls.at(-1).messages;
     const chars = sent.reduce((total, message) => total + message.content.length, 0);
-    assert.equal(chars <= DEFAULT_HISTORY_BUDGET_CHARS + 200, true, `实际 ${chars} 字符`);
+    assert.ok(chars > 27000, `实际 ${chars} 字符`);
+    assert.ok(sent.some((message) => message.content === '第1轮' + '字'.repeat(9000)));
 
     const applied = (await controllerEvents(controller))
       .filter((event) => event.type === 'history_applied')
       .at(-1);
-    assert.equal(applied.data.truncated_turns > 0, true);
-    assert.equal(applied.data.kept_turns < 3, true);
+    assert.equal(applied.data.truncated_turns, 0);
+    assert.equal(applied.data.kept_turns, 3);
   } finally {
     await controller.close();
   }
@@ -1951,11 +1952,133 @@ test('有界读历史：小会话窗口即全量——messages 与全量口径�
   }
 });
 
+test('模型窗口决定自动压缩：大窗口保留原文，切小窗口后先收敛旧轮、保留最近章，重启仍有摘要', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-auto-compact-');
+  const projectRoot = path.join(root, 'novel');
+  let contextWindow = 1_000_000;
+  const compactions = [];
+  const normal = [];
+  const notices = [];
+  const modelClient = {
+    getLimits: () => ({ contextWindow, maxOutputTokens: 10000 }),
+    async streamChat({ messages, onDelta }) {
+      if (messages[0].content.includes('工作摘要')) {
+        compactions.push(structuredClone(messages));
+        onDelta('最早的关键事实：主角不会游泳，第三章的钥匙尚未使用。');
+      } else {
+        normal.push(structuredClone(messages));
+        onDelta(`第${normal.length}章${'字'.repeat(15000)}`);
+      }
+      return { finishReason: 'stop' };
+    },
+  };
+  const { controller } = await makeRealLoopController({ root, projectRoot, modelClient, extra: { onNotice: (text) => notices.push(text) } });
+  let reopened = null;
+  try {
+    for (let i = 0; i < 5; i += 1) await controller.submit({ text: `写第${i + 1}章` });
+    assert.equal(compactions.length, 0, '大窗口不为旧 24000 字预算压缩');
+    assert.ok(normal.at(-1).some((message) => message.content === `第1章${'字'.repeat(15000)}`));
+    contextWindow = 100000;
+    await controller.submit({ text: '继续写第六章' });
+    assert.ok(compactions.length > 0);
+    assert.ok(compactions[0].some((message) => message.content.includes('第1章')));
+    const sent = normal.at(-1);
+    assert.ok(sent.some((message) => message.content.includes('主角不会游泳')));
+    assert.ok(sent.some((message) => message.content === `第5章${'字'.repeat(15000)}`), '最近一章保持全文');
+    assert.equal(sent.at(-1).content, '继续写第六章');
+    const events = await controllerEvents(controller);
+    const digest = events.find((event) => event.type === 'digest_compacted');
+    const recent = events.find((event) => event.type === 'run_started' && event.data.text === '写第5章');
+    assert.ok(digest.data.through_seq < recent.seq, '近期章不被摘要覆盖');
+    assert.ok(notices.includes('压缩中'));
+    await controller.close();
+    reopened = (await makeRealLoopController({ root, projectRoot, modelClient })).controller;
+    await reopened.submit({ text: '接着上次写' });
+    assert.ok(normal.at(-1).some((message) => message.content.includes('主角不会游泳')));
+  } finally {
+    await controller.close();
+    await reopened?.close();
+  }
+});
+
+test('自动压缩失败不丢历史、不发布摘要；换回大窗口仍能完整继续', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-auto-failure-');
+  const projectRoot = path.join(root, 'novel');
+  let contextWindow = 1_000_000;
+  const calls = [];
+  const modelClient = {
+    getLimits: () => ({ contextWindow, maxOutputTokens: 10000 }),
+    async streamChat({ messages, onDelta }) {
+      if (messages[0].content.includes('工作摘要')) throw new Error('压缩连接失败');
+      calls.push(structuredClone(messages));
+      onDelta('首章关键设定。' + '字'.repeat(80000));
+      return { finishReason: 'stop' };
+    },
+  };
+  const { controller } = await makeRealLoopController({ root, projectRoot, modelClient });
+  try {
+    await controller.submit({ text: '写第一章' });
+    contextWindow = 100000;
+    await assert.rejects(() => controller.submit({ text: '继续' }), /压缩连接失败/);
+    assert.equal((await controllerEvents(controller)).some((event) => event.type === 'digest_compacted'), false);
+    contextWindow = 1_000_000;
+    await controller.submit({ text: '接着写' });
+    assert.ok(calls.at(-1).some((message) => message.content.startsWith('首章关键设定。')));
+  } finally { await controller.close(); }
+});
+
+test('超过旧 8000 字符的项目记忆完整注入，不丢末尾人物事实', async () => {
+  const root = await makeTempRoot('wwriting-memory-full-');
+  const content = `# 记忆\n${'设定。'.repeat(4000)}\n末尾人物事实：主角不会游泳`;
+  const { controller, sink } = await memoryRig(root, { readMemory: async () => ({ state: 'present', content }) });
+  try {
+    await controller.submit({ text: '写第一章' });
+    assert.ok(sink[0].memory.message.content.endsWith('主角不会游泳'));
+    assert.equal(sink[0].memory.omittedChars, 0);
+  } finally { await controller.close(); }
+});
+
+test('自动压缩中停止：不发布半份摘要，队列不并发启动，后续输入仍能继续', async () => {
+  const root = await makeTempRoot('wwriting-ctrl-auto-stop-');
+  const projectRoot = path.join(root, 'novel');
+  let contextWindow = 1_000_000;
+  let entered = false;
+  const modelClient = {
+    getLimits: () => ({ contextWindow, maxOutputTokens: 10000 }),
+    async streamChat({ messages, onDelta, signal }) {
+      if (messages[0].content.includes('工作摘要')) {
+        entered = true;
+        onDelta('尚未完成的摘要');
+        await new Promise((resolve) => signal.aborted ? resolve() : signal.addEventListener('abort', resolve, { once: true }));
+      } else { onDelta('正文' + '字'.repeat(80000)); }
+      return { finishReason: 'stop' };
+    },
+  };
+  const { controller } = await makeRealLoopController({ root, projectRoot, modelClient });
+  try {
+    await controller.submit({ text: '第一章' });
+    contextWindow = 100000;
+    const pending = controller.submit({ text: '继续' });
+    const rejected = assert.rejects(pending, /已停止压缩/);
+    await waitFor(() => entered, { label: '自动压缩启动' });
+    const queued = await controller.submit({ text: '后续排队输入' });
+    assert.equal(queued.queued, true);
+    controller.stop();
+    await rejected;
+    assert.equal((await controllerEvents(controller)).some((event) => event.type === 'digest_compacted'), false);
+    assert.equal(controller.snapshot().queue.length, 1);
+    contextWindow = 1_000_000;
+    const continued = await controller.submit({ text: '恢复写作' });
+    assert.equal(continued.result.status, 'completed');
+    assert.equal(controller.snapshot().queue.length, 0);
+  } finally { await controller.close(); }
+});
+
 test('有界读历史：超预算大日志按字节窗截断——messages 仍与全量一致，省略数降级「N+」', async () => {
   const root = await makeTempRoot('wwriting-ctrl-bounded-big-');
   const projectRoot = path.join(root, 'novel');
   const loop = makeLoopFactory();
-  const { controller } = await makeController({ root, projectRoot, agentLoopFactory: loop.factory });
+  const { controller } = await makeController({ root, projectRoot, agentLoopFactory: loop.factory, extra: { historyBudgetChars: 24000 } });
 
   try {
     // 每轮用户原文 ~0.6KB（input_submitted + run_started 各带一份）→ 260 轮 ≈ 620KB 日志，
@@ -1974,7 +2097,7 @@ test('有界读历史：超预算大日志按字节窗截断——messages 仍�
     const lastStarted = events.filter((event) => event.type === 'run_started').at(-1);
     const built = buildHistoryMessages(
       projectTurns(events.filter((event) => event.seq < lastStarted.seq)),
-      { budgetChars: DEFAULT_HISTORY_BUDGET_CHARS },
+      { budgetChars: 24000 },
     );
     assert.deepEqual(last.history, built.messages);
   } finally {

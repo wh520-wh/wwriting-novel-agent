@@ -1364,6 +1364,32 @@ test('历史搜索期间斜杠菜单被抑制：Esc 退出后行一变才回到�
   }
 });
 
+test('历史搜索没有匹配或历史为空时，Esc 仍退出模式并恢复斜杠菜单', async () => {
+  for (const history of [[], ['写第一章']]) {
+    const stdin = makeFakeTTY();
+    const stdout = makeSink({ tty: true });
+    const submitted = [];
+    const reader = createInputReader({ stdin, stdout, env: { NO_COLOR: '1' }, history,
+      menuCommands: [{ name: '/model', description: '设置模型' }],
+      onSubmit: (text) => submitted.push(text) });
+    reader.start();
+    try {
+      stdin.write('/mo\x12');
+      await tick();
+      assert.equal(screenText(stdout.text()).includes('设置模型'), false, '无匹配时仍在历史搜索模式');
+      stdin.write('\x1b');
+      await new Promise((resolve) => setTimeout(resolve, 90));
+      assert.ok(screenText(stdout.text()).includes('❯ /mo'), '退出保留草稿');
+      stdin.write('d');
+      await tick();
+      assert.ok(screenText(stdout.text()).includes('设置模型'), '行一变斜杠菜单恢复');
+      assert.deepEqual(submitted, [], 'Esc 不提交输入');
+    } finally {
+      reader.stop();
+    }
+  }
+});
+
 test('启动播种：↑ 翻出跨进程历史（readline history，最新在前）', async () => {
   const stdin = makeFakeTTY();
   const stdout = makeSink({ tty: true });

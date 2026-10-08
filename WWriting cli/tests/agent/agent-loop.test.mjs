@@ -745,13 +745,13 @@ test('history 整段被截没（messages 空但 truncatedTurns > 0）仍要发 h
   assert.deepEqual(model.calls[0].messages.map((message) => message.role), ['system', 'user']);
 });
 
-test('超长历史：截断后送模型的 messages 在预算内，且 truncated_turns > 0', async () => {
+test('超过旧 24000 字符的历史完整送模型，早期章节仍可见', async () => {
   const { projectRoot, store, permissions, model } = await setup({
     prefix: 'wwriting-loop-history-budget-',
     script: [{ deltas: ['接着写。'] }],
   });
   const loop = makeLoop({ model, store, permissions });
-  // 三轮各 12000 字符的正文：总共 36000 > 24000，最新一轮之外必然要丢。
+  // 三轮各 12000 字符的正文超过旧预算，但仍在当前模型窗口内。
   const big = (label) => `${label}${'字'.repeat(12000)}`;
   const history = [
     { role: 'user', content: '写第一章' },
@@ -763,7 +763,7 @@ test('超长历史：截断后送模型的 messages 在预算内，且 truncated
   ];
 
   const built = buildHistoryMessagesFor(history);
-  assert.deepEqual(built.meta.truncatedTurns > 0, true, '超预算时必须有轮次被省略');
+  assert.equal(built.meta.truncatedTurns, 0);
 
   const result = await loop.run({
     projectRoot, sessionId: 'sess-1', inputId: 'in-4', text: '写第四章',
@@ -773,12 +773,13 @@ test('超长历史：截断后送模型的 messages 在预算内，且 truncated
   assert.equal(result.status, 'completed');
   const sent = model.calls[0].messages;
   const chars = sent.reduce((total, message) => total + message.content.length, 0);
-  // 预算只约束历史；这里连 system 与当轮输入一起算，仍然远小于「三轮全量」的 36000 量级。
-  assert.equal(chars <= DEFAULT_HISTORY_BUDGET_CHARS + 200, true, `实际 ${chars} 字符`);
-  // 最新的那一轮必须在：丢掉的只能是最早的上下文。
+  // 连同系统与当前输入，三轮原文完整送入。
+  assert.ok(chars > 36000, `实际 ${chars} 字符`);
+  assert.ok(sent.some((message) => message.content === big('一')));
+  // 最近一轮同样完整保留。
   assert.equal(JSON.stringify(sent).includes(big('三')), true);
   const applied = (await readEvents(store)).find((event) => event.type === 'history_applied');
-  assert.equal(applied.data.truncated_turns > 0, true);
+  assert.equal(applied.data.truncated_turns, 0);
   assert.equal(applied.data.kept_turns, built.meta.keptTurns);
 });
 

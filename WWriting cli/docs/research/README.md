@@ -1,6 +1,8 @@
 # 调研文件索引
 
-调研日期:2026-09-27。方法:子代理联网调研(WebSearch + 官方文档/一手资料抓取),每份报告均附来源链接,未能核实的说法在文中标注「未确认」。各报告中的库版本、价格为调研当日口径,落地前需复核。
+记录于：2026-10-08｜状态：当前有效｜依据：当前源码、`package.json` 与报告日期复核。本页索引历史调研，不代表当前技术选型或尚未完成的任务。
+
+原调研日期：2026-09-27。方法：子代理联网调研与一手资料抓取；报告中的库版本、价格和建议为调研当日口径，落地前复核。当前 CLI 采用 Node 标准库的终端/网络实现及 `yaml` 依赖，具体入口见[使用说明](../../README.md)，验证见[项目状态](../../../docs/memory/project-progress.md#当前状态)。
 
 ## 文件清单
 
@@ -14,7 +16,7 @@
 | [06-deepseek-reasoning-effort-probe.md](06-deepseek-reasoning-effort-probe.md) | DeepSeek 思考强度与输出上限(适配记录,非实测) | OpenAI 格式下 `none` 只发 `thinking.type=disabled`、`low/high/max` 双发 `reasoning_effort`;官方端点 1M 上下文,最新模型输出 384K |
 | ~~06-agent-safety-permissions.md~~ | Agent 权限与安全约束 | **未完成**(子代理派发被中断),主题清单见下节 |
 
-## 跨报告的关键选型结论
+## 调研时的建议（历史记录，不是实际选型）
 
 1. **技术栈**:Node ≥ 24(ESM)+ commander v15 + Ink 7(React ≥ 19.2)+ openai npm 包(baseURL 指向智谱 GLM)。
 2. **TUI 布局**:inline 模式;已完成内容用 `<Static>` 写入 scrollback,动态区只保留「活动行 + 状态行 + 输入框 + 叠加卡」。
@@ -23,7 +25,7 @@
 5. **字数**:count_text 主口径取「去空白字符数」,用 Intl.Segmenter 实现;LongWriter/AgentWrite 的「计划-分段-字数预算」是分章生成的学术依据。
 6. **停止/打断**:每轮一个 AbortController;打断 = abort 当前请求 + 队列输入提升为下一轮首条消息。
 
-## 未完成项:06 Agent 权限与安全约束
+## 当时未完成的调研：06 Agent 权限与安全约束
 
 拟覆盖主题(将来可直接按此续做):
 1. Claude Code 权限规则语法与求值顺序、hooks 硬约束、sandbox、bypassPermissions 事故案例;

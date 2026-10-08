@@ -1131,6 +1131,48 @@ test('非交互分支：没有可交互终端时给出中文事实并返回非�
   );
 });
 
+test('@ 文件引用：真实扫描接入菜单，大写查询 Tab 补全，仅提交路径', { timeout: 30000 }, async () => {
+  const { appDataRoot, workspace, model } = await scenario(() => textTurn('已收到文件引用。'));
+  await fs.writeFile(path.join(workspace, 'OUTLINE.md'), '不应自动注入的文件内容');
+  const run = makeIo({ appDataRoot, cwd: workspace });
+  const completion = main([], run.io);
+  try {
+    await waitFor(() => run.stdout.text().includes('直接输入开始写作'), '对话面');
+    run.stdin.write('@OUTLINE');
+    await waitFor(() => screenText(run.stdout.text()).includes('❯ OUTLINE.md'), '扫描后的文件候选');
+    run.stdin.write('\t');
+    await waitFor(() => screenText(run.stdout.text()).includes('❯ OUTLINE.md'), '路径进入草稿');
+    assert.equal(model.requests.length, 0, 'Tab 不提交');
+    run.stdin.write('\r');
+    await waitFor(() => run.stdout.text().includes('已完成'), 'Run 终态');
+    const messages = model.requests[0].messages;
+    assert.equal(messages.filter((message) => message.role === 'user').at(-1).content.trim(), 'OUTLINE.md');
+    assert.equal(JSON.stringify(messages).includes('不应自动注入的文件内容'), false);
+  } finally {
+    await quit(run.io, run.stdin, completion, run.stdout);
+    await model.close();
+  }
+});
+
+test('输入历史：启动压缩、跨启动相邻去重、快速提交后退出不漏记录', { timeout: 30000 }, async () => {
+  const { appDataRoot, workspace } = await ownPaths('wwriting-accept-input-history-');
+  await writeConfig(appDataRoot, 'http://127.0.0.1:1');
+  const store = createWorkspaceStore({ appDataRoot });
+  const historyFile = path.join(store.directoryFor(workspace), 'input-history.jsonl');
+  await fs.mkdir(path.dirname(historyFile), { recursive: true });
+  const entries = Array.from({ length: 501 }, (_, i) => ({ at: new Date(i).toISOString(), text: i === 500 ? '/help' : `旧输入-${i}` }));
+  await fs.writeFile(historyFile, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+  const run = makeIo({ appDataRoot, cwd: workspace });
+  const completion = main(['/help'], run.io);
+  await waitFor(() => run.stdout.text().includes('显示本帮助'), '位置参数提交');
+  run.stdin.write('/help\r/help\r/quit\r');
+  assert.equal(await completion, 0);
+  const saved = (await fs.readFile(historyFile, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(saved.length, 500);
+  assert.deepEqual(saved.slice(0, -1), entries.slice(2));
+  assert.equal(saved.at(-1).text, '/quit', '退出前等待历史写完');
+});
+
 test('模型设置向导：/model 无参 → 方向键换模型 → 下一轮请求就用新模型', { timeout: 30000 }, async () => {
   // 用户不必记得 /model <模型名>：打一个 /model 就进入可上下键选择的设置流程。
   const { appDataRoot, workspace, model } = await scenario(() => textTurn('第一章已经写好。'));
@@ -1258,8 +1300,8 @@ test('跨进程恢复：第二条请求确实带上了第一条的内容', { tim
   }
 });
 
-// 历史真的被截断时，用户必须看得见（而不是以为模型全都记得）。
-test('历史超预算时屏幕上说明省略了多少轮', { timeout: 90000 }, async () => {
+// 真实 HTTP/SSE 组合根也不再套用旧 24000 字符历史上限。
+test('超过旧历史预算时仍把早期章节全文送给模型，不显示省略', { timeout: 90000 }, async () => {
   const { appDataRoot, workspace, model } = await scenario(
     ({ index }) => textTurn(`第${index}轮开始：${'长'.repeat(8000)}`),
   );
@@ -1269,9 +1311,7 @@ test('历史超预算时屏幕上说明省略了多少轮', { timeout: 90000 }, 
     const completion = main(['--cwd', workspace, '第一轮'], run.io);
     await waitFor(() => occurrences(run.stdout.text(), '已完成') >= 1, '第一轮完成');
 
-    // 每轮 8000 字符，预算 24000：读到第 3 轮前，日志里只有 2 轮 = 16006 字符，还没超。
-    // 第 4 轮读历史时前面已有 3 轮 = 24009 字符 > 预算，截断这才真的发生。
-    // （这就是「历史在开工前读、不含当轮」的直接推论，等轮数对了才谈得上断言。）
+    // 第四轮请求的已往正文超过 24000 字符，当前模型窗口仍足以完整装入。
     const needed = 4;
     for (let round = 2; round <= needed; round += 1) {
       run.stdin.write(`第${round}轮\r`);
@@ -1282,15 +1322,11 @@ test('历史超预算时屏幕上说明省略了多少轮', { timeout: 90000 }, 
       );
     }
 
-    await waitFor(
-      () => /省略更早 \d+ 轮/.test(run.stdout.text()),
-      '历史截断事实行',
-      30000,
-    );
-
     const screen = run.stdout.text();
-    assert.ok(screen.includes('已载入前情'), `超预算时应说明记得多少；屏幕尾部：${screen.slice(-2000)}`);
-    assert.ok(/省略更早 \d+ 轮/.test(screen), '要说清省略了多少轮');
+    const sent = model.requests.at(-1).messages;
+    assert.ok(sent.some((message) => message.content === `第0轮开始：${'长'.repeat(8000)}`));
+    assert.ok(sent.reduce((n, message) => n + message.content.length, 0) > 24000);
+    assert.equal(/省略更早 \d+ 轮/.test(screen), false);
 
     await quit(run.io, run.stdin, completion, run.stdout);
   } finally {

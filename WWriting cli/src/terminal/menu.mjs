@@ -70,7 +70,7 @@ export function fileMenu({ line, cursor = null, files, selected = 0 } = {}) {
   const before = text.slice(0, cur);
   const at = before.lastIndexOf('@');
   if (at === -1) return close();
-  const query = before.slice(at + 1);
+  const query = before.slice(at + 1).toLowerCase();
   if (/\s/.test(query)) return close(); // @ 与光标之间已有空白：引用 token 已结束。
   const matches = (Array.isArray(files) ? files : [])
     .filter((item) => typeof item?.path === 'string' && item.path !== '')

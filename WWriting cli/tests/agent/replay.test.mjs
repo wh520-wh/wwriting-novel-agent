@@ -222,7 +222,7 @@ test('默认预算就是模型记忆的那一份（DEFAULT_HISTORY_BUDGET_CHARS�
   const { keptTurns } = buildReplay(events);
   const built = buildHistoryMessages(projectTurns(events), { budgetChars: DEFAULT_HISTORY_BUDGET_CHARS });
   assert.equal(keptTurns, built.keptTurns);
-  assert.ok(keptTurns < 60, '预算确实在起作用，不是全都重演');
+  assert.equal(keptTurns, 60, '默认完整重演，不再套用旧 24000 字符上限');
 });
 
 test('被省略的更早轮次如实计入 omittedTurns（供渲染层说明「省略了多少」）', () => {
