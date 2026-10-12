@@ -356,7 +356,7 @@ export function createAgentRuntime({
   // （index.mjs 转发链零改动）。函数设计注释随逻辑迁入新模块。
   // Task 18：项目串行门 assertNoOtherSessionRunning 随 run 命令面迁入
   // run-control.mjs（其唯一三个消费方 submit/retry/retryCompaction 同迁）。
-  const sessionManager = createSessionManager({ ensureProject, resolveSessionState });
+  const sessionManager = createSessionManager({ ensureProject, resolveSessionState, redactText: (text) => redactor.redact(text) });
 
   // 会话 load 后的崩溃对账（等价旧 open() 的恢复序列，不含 startLoop——循环启动
   // 由调用方在串行门通过后决定）：checkpoint 对账 → 非终态压缩收敛。
@@ -721,6 +721,7 @@ export function createAgentRuntime({
     sessions: sessionManager.sessions,
     // 显式建会话（前端"+"按钮 / 对话 B 场景）。
     newSession: sessionManager.newSession,
+    forkSession: sessionManager.forkSession,
     renameSession: sessionManager.renameSession,
     archiveSession: sessionManager.archiveSession,
     restoreSession: sessionManager.restoreSession,

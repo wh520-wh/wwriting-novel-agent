@@ -74,6 +74,9 @@ export const SAFE_PUBLIC_ERROR_CODES = new Set([
   "session_not_found",
   "project_busy",
   "session_busy",
+  "invalid_branch_point",
+  "branch_point_changed",
+  "branch_history_gap",
   // ProviderConfigurationError（model/openai-compatible.mjs）：message 程序写死
   // 中文（如「不支持的模型接口协议: xxx」只拼用户配置的协议名，不拼底层异常），
   // 运行/连接路径拒绝不可用配置时原因必须送达用户而非通用兜底。

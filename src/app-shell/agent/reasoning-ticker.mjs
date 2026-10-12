@@ -6,7 +6,7 @@
 // reasoning（item.text），不使用 ticker 文本拼装原文。
 //
 // scheduler 注入（默认 globalThis）以便测试用 fake clock 确定性推进计时。
-export function createReasoningTicker({ onDisplay, dwellMs = 800, scheduler = globalThis } = {}) {
+export function createReasoningTicker({ onDisplay, dwellMs = 1800, scheduler = globalThis } = {}) {
   let current = "";       // 当前展示中的完整片段
   let pendingLatest = ""; // 计时期间到达的最新完整片段（积压只保留最新）
   let carry = "";         // 尚未构成完整片段的尾段

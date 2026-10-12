@@ -55,6 +55,16 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
     }).catch(() => ({ changed: false }))).changed;
   }
 
+  // 普通文件夹与结构化作品都使用运行时同源的私有设置和模型解析。
+  const effectiveWs = typeof options.workspaceStore?.loadSettings === "function"
+    ? await loadEffectiveWorkspaceConfig(projectRoot, {
+        workspaceStore: options.workspaceStore,
+        ...(options.secretsRoot
+          ? { modelStoreLoader: () => loadProviderStoreReadOnly(options.secretsRoot) }
+          : {})
+      })
+    : null;
+
   // 普通文件夹（无 project.yaml）也是合法工作区（SPEC §2.1）：应用私有 history
   // 在 stateRoot，文件夹本身即可立即聊天。返回 hasProject:false 的最小工作区形状，
   // 绝不把 ENOENT/内部错误暴露给用户（SPEC §11）。
@@ -69,6 +79,7 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
       // 前端不自行派生（尾分隔符 / UNC / 盘根边界只处理这一处）。
       name: path.basename(projectRoot),
       project: null,
+      ...(effectiveWs ? { config: { effective: effectiveWs } } : {}),
       sessions: sessionData.sessions,
       active_session_id: sessionData.active_session_id,
       migration_notice: migrationNotice
@@ -89,19 +100,7 @@ export async function loadDashboardData(workspaceRoot, options = {}) {
   // 会回落到默认 confirm。注入 workspaceStore 时用同一权威覆盖 effective 字段；
   // 该权威同样覆盖 project.yaml 里可能领先于 local/policy 层的 budget_config /
   // research_config——agent runtime 也不读 config/*.json 层。
-  let effectiveWs = null;
-  if (typeof options.workspaceStore?.loadSettings === "function") {
-    effectiveWs = await loadEffectiveWorkspaceConfig(projectRoot, {
-      workspaceStore: options.workspaceStore,
-      // 任务 6：迁移后 active_model 为引用形态，注入 modelStoreLoader 解析为完整
-      // 配置（provider/model_name/base_url），保证 dashboard 展示字段在迁移后不退化。
-      // 与组合根运行时同一解析源，但走只读加载——dashboard 是读路径，不触发
-      // model-profiles.json 的 v1→v2 写回（v1 读写路径已在 Task 17 cutover 删除，
-      // 该文件由 v2 store 独占）。
-      ...(options.secretsRoot
-        ? { modelStoreLoader: () => loadProviderStoreReadOnly(options.secretsRoot) }
-        : {})
-    });
+  if (effectiveWs) {
     // 覆盖 active_model / tool_permissions 等字段（workspace settings 优先，与
     // settings-routes 合并顺序一致）；config.layers 仍由 loadConfigLayers 提供。
     config.effective = { ...config.effective, ...effectiveWs };

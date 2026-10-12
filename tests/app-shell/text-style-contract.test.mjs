@@ -426,17 +426,16 @@ test("模型设置布局：model-row 响应式 grid/minmax + min-width:0，窄�
 });
 
 // ===========================================================================
-// 8) 圆角契约（Codex 基线）：卡片/控件圆角 ≤12px（99px/999px 圆形 pill 与头像除外）
+// 8) 圆角契约：控件 10px、卡片 14px、大表面 20px，圆形/胶囊沿用独立档
 // ===========================================================================
-test("圆角不超过 12px：radius token 全部 ≤12px，无 13–98px 圆角", () => {
+test("圆角按三档递增：10/14/20px，组件复用 token", () => {
   for (const [file, src] of [["styles.css", stylesSource], ["agent.css", agentCssSource]]) {
-    const offenders = [...src.matchAll(/border-radius:\s*(1[3-9]|2[0-9]|[3-8][0-9]|9[0-8])px/gu)].map((m) => m[0]);
-    assert.equal(offenders.length, 0, `${file} 不得出现 13–98px 圆角：${offenders.join(", ")}`);
+    const offenders = [...src.matchAll(/border-radius:\s*(1[1-9]|[2-8][0-9]|9[0-8])px/gu)].map((m) => m[0]);
+    assert.equal(offenders.length, 0, `${file} 卡片圆角应引用 token：${offenders.join(", ")}`);
   }
-  for (const token of ["--r", "--r-sm", "--r-lg"]) {
+  for (const [token, expected] of [["--r-sm", "10px"], ["--r", "14px"], ["--r-lg", "20px"]]) {
     const value = rootTokens[token] ?? "";
-    assert.match(value, /^\d+px$/u, `${token} 应为 px 值（当前 ${value}）`);
-    assert.ok(parseInt(value, 10) <= 12, `${token} 应 ≤12px（当前 ${value}）`);
+    assert.equal(value, expected, `${token} 应为 ${expected}`);
   }
   assert.equal(rootTokens["--r-pill"] ?? "", "999px", "--r-pill 胶囊档（round17 §3.4）");
   assert.equal(rootTokens["--ink-shadow"] ?? "", "24, 32, 27", "--ink-shadow 三元组（round17 §3.2）");
@@ -452,7 +451,11 @@ test("Codex 基线：Assistant 正文 regular；对话画布非纯白冷调，�
   // Round10：正文引用全局整数字阶 token，行高 ≥2.0（正文神圣，spec §5.5）
   assert.equal(markdown["font-size"], "var(--font-md)", "正文字号应引用全局 token");
   assert.equal(resolveVar("--font-md"), "15px", "正文 15px 整数档");
-  assert.ok(parseFloat(markdown["line-height"]) >= 2, "正文行高不得低于 2.0");
+  assert.equal(markdown["font-family"], "var(--sans)", "AI 说明使用无衬线字体");
+  assert.ok(parseFloat(markdown["line-height"]) >= 1.8, "说明保持可读行距");
+  const manuscript = extractDecls(extractBlock(agentCssSource, ".manuscript-block"));
+  assert.equal(manuscript["font-family"], "var(--serif)", "小说文稿使用衬线字体");
+  assert.ok(parseFloat(manuscript["line-height"]) >= 2, "文稿行高不得低于 2.0");
 
   // 对话画布（--agent-canvas → --bg）不得纯白且为冷调/中性（蓝 ≥ 红，排除泛黄纸色）；
   // 卡片白底（--surface=#ffffff）允许；rail 仍不得纯白。

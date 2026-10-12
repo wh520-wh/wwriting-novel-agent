@@ -337,6 +337,7 @@ const WORK_INERT_EVENTS = new Set([
   "chapter_rolled_back",
   "memory_file_restored",
   "session_created",
+  "message_imported",
   "permission_grant_created",
   "permission_grant_cleared",
   "checkpoint_linked",
@@ -488,6 +489,7 @@ export function reduceWorkEvent(work, event) {
         item.state = "completed";
         item.label = toolLabel(item.tool, "completed");
         item.terminal_seq = seq; // Task 10：终态事件 seq 落位（start 位置不变）
+        item.chapterNo = Number.isSafeInteger(payload.chapter_no) && payload.chapter_no > 0 ? payload.chapter_no : null;
         // Task 2：退出码与耗时仅当事件携带时写入（镜像旧 state.js；0 是合法值）
         if (payload.exit_code != null) item.exit_code = payload.exit_code;
         if (payload.duration_ms != null) item.duration_ms = payload.duration_ms;

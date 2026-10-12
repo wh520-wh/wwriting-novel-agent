@@ -234,7 +234,12 @@ export function createWorkGroupView(ctx) {
     const itemsEl = doc.createElement("div");
     itemsEl.className = "agent-work-items";
     details.append(summary, itemsEl);
+    const outcome = doc.createElement("div");
+    outcome.className = "agent-work-outcome";
+    outcome.hidden = true;
+    outcome.setAttribute("role", "status");
     timeline.insertTimeline(details, group.firstSeq, workGroupKey(group));
+    timeline.insertTimeline(outcome, group.firstSeq, `${workGroupKey(group)}:outcome`);
     const record = {
       groupId: group.id,
       details,
@@ -243,6 +248,7 @@ export function createWorkGroupView(ctx) {
       status,
       duration,
       itemsEl,
+      outcome,
       rows: new Map(),       // itemId -> row
       trimmedIds: new Set(), // 已按 20 行上限裁剪的 item id（不再重建、不参与重排）
       userToggled: false,    // 用户手动折叠后，投影的 expanded 不再覆盖
@@ -490,12 +496,9 @@ export function createWorkGroupView(ctx) {
             onDisplay: (text) => {
               if (row.tickerEl.textContent !== text) {
                 row.tickerEl.textContent = text;
-                // AICSS thinking-reasoning：片段滚动替换动效——重挂 class 重启
-                // CSS 动画（旧片段滚出、新片段滚入；真实 DOM 强制 reflow，
-                // 测试 mock 无 offsetWidth 时空转不报错）。
-                row.tickerEl.classList.remove("agent-ticker-swap");
-                void row.tickerEl.offsetWidth;
-                row.tickerEl.classList.add("agent-ticker-swap");
+                if (!doc.defaultView?.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+                  row.tickerEl.animate?.([{ opacity: 0.45 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
+                }
               }
             },
             scheduler: tickerSchedulerFor(record)
@@ -512,7 +515,7 @@ export function createWorkGroupView(ctx) {
         row.detailEl.textContent = "";
         if (row.caret) row.caret.hidden = true;
       } else {
-        row.tickerEl.hidden = true;
+        row.tickerEl.hidden = ctx.followLatest !== false || !row.tickerEl.textContent;
         if (wasRunning) {
           row.ticker?.finish?.(); // 立即停止 ticker 计时，不延迟折叠
           row.ticker = null;
@@ -729,7 +732,8 @@ export function createWorkGroupView(ctx) {
     record.status.dataset.status = group.status;
     record.statusMark.dataset.status = group.status;
     // 展开默认值只在用户未手动切换时应用；完成后投影 expanded=false → 自动折叠。
-    if (!record.userToggled && record.details.open !== group.expanded) {
+    if (!record.userToggled && record.details.open !== group.expanded
+        && !(group.status === "completed" && ctx.followLatest === false)) {
       record.details.open = group.expanded;
     }
     if (TERMINAL_RUN_STATUSES.has(group.status)) {
@@ -753,6 +757,35 @@ export function createWorkGroupView(ctx) {
 
     // 排序只算一次：子项行序、裁剪、动效目标（applyLiveTargets）共用这份投影序。
     const ordered = orderedWorkItems(group);
+    const live = ordered.findLast((item) => item.state === "running");
+    if (group.status === "running" && !group.retryHint) {
+      record.status.textContent = live?.label ?? (ctx.currentState?.assistantStream?.runId === group.id ? "正在生成" : groupStatusText(group));
+    }
+    record.details.dataset.stage = live?.kind ?? "text";
+    const results = ordered.filter((item) => item.kind === "tool" && item.state === "completed"
+      && ["write_file", "edit_file", "append_chapter_segment", "commit_chapter", "finalize_revision"].includes(item.tool));
+    const result = results.at(-1);
+    const resultSignature = result ? `${result.id}:${result.terminal_seq}` : "";
+    if (record.resultSignature !== resultSignature) {
+      record.resultSignature = resultSignature;
+      record.outcome.replaceChildren();
+      record.outcome.hidden = !result;
+      if (result) {
+        const label = result.tool === "append_chapter_segment" ? "草稿已写入"
+          : result.tool === "commit_chapter" ? "章节已提交" : result.tool === "finalize_revision" ? "修订已入账" : "文件已写入";
+        const text = doc.createElement("span");
+        text.textContent = `${result.chapterNo ? `第 ${result.chapterNo} 章 · ` : ""}${label}${result.detail ? ` · ${result.detail}` : ""}`;
+        record.outcome.append(viewIcon("check", 14), text);
+        if (["commit_chapter", "finalize_revision"].includes(result.tool) && result.chapterNo) {
+          const open = doc.createElement("button");
+          open.type = "button";
+          open.className = "agent-outcome-open";
+          open.textContent = "查看正文";
+          open.addEventListener("click", () => ctx.actions.openChapter?.(result.chapterNo));
+          record.outcome.append(open);
+        }
+      }
+    }
     const seen = new Set();
     let changed = false;
     for (const item of ordered) {
@@ -811,9 +844,11 @@ export function createWorkGroupView(ctx) {
       //（键映射与 seq 索引由 removeNode 统一清除——旧 groupKey 即 dataset.eventKey。）
       if (record.groupSeq !== group.firstSeq) {
         timeline.removeNode(record.details);
+        timeline.removeNode(record.outcome);
         record.groupSeq = group.firstSeq;
         record.groupKey = workGroupKey(group);
         timeline.insertTimeline(record.details, group.firstSeq, record.groupKey);
+        timeline.insertTimeline(record.outcome, group.firstSeq, `${record.groupKey}:outcome`);
         changed = true;
       }
       // 增量门控：投影给每个非惰性事件递增该组 rev，未变组跳过全量更新（首帧新
@@ -823,6 +858,14 @@ export function createWorkGroupView(ctx) {
       if (record.rev !== group.rev) {
         record.rev = group.rev;
         if (updateWorkGroup(record, group)) changed = true;
+      }
+      // 正文 delta 不改变工作项修订号，摘要仍需立即反映真实正文流。
+      if (group.status === "running" && !group.retryHint) {
+        const streaming = state.assistantStream?.runId === group.id && state.assistantStream.text;
+        if (streaming) {
+          if (record.status.textContent !== "正在生成") record.status.textContent = "正在生成";
+          record.details.dataset.stage = "text";
+        } else if (record.status.textContent === "正在生成") record.status.textContent = groupStatusText(group);
       }
     }
     for (const [id, record] of workGroups) {
@@ -837,6 +880,7 @@ export function createWorkGroupView(ctx) {
         //（键映射与 seq 索引由 removeNode 统一清除——groupKey 即 details.dataset.eventKey。）
         timeline.removeNode(record.details);
         workGroups.delete(id);
+        timeline.removeNode(record.outcome);
       }
     }
     placeRunControls(state); // 工作组出现/消失后重新放置停止按钮

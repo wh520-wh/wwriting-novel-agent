@@ -96,7 +96,7 @@ function requireSessionId(sessionId) {
 // 会话管理实例工厂：runtime.mjs 在 createAgentRuntime 内逐项目生命周期持有
 //（ensureProject/resolveSessionState 是 runtime 内部闭包，只能引用注入）。
 export function createSessionManager(ctx) {
-  const { ensureProject, resolveSessionState } = ctx;
+  const { ensureProject, resolveSessionState, redactText = (text) => text } = ctx;
 
   // 会话列表 + 最近活跃（dashboard 数据源）。
   // run_status 投影（左侧栏状态点 + busy 复位数据源）：
@@ -146,6 +146,79 @@ export function createSessionManager(ctx) {
     }
     const state = ensureProject(projectRoot);
     return state.registry.create({ title });
+  }
+
+  async function forkSession({ projectRoot, sessionId, throughSeq, eventId }) {
+    requireSessionId(sessionId);
+    if (!Number.isSafeInteger(throughSeq) || throughSeq < 1 || typeof eventId !== "string" || !eventId) {
+      throw fail("invalid_branch_point", "请选择一条已生成的回复。");
+    }
+    if (typeof projectRoot !== "string" || !projectRoot) throw fail("invalid_project_root", "工作区无效。");
+    const state = ensureProject(projectRoot);
+    return state.mutex.run(async () => {
+      const source = await resolveSessionState(state, sessionId);
+      await source.journal.load();
+      const messages = [];
+      const queued = new Map();
+      let stream = "";
+      let afterSeq = 0;
+      let found = false;
+      while (!found) {
+        const page = await source.journal.readAfter({ afterSeq, limit: 200 });
+        if (page.gaps?.some((gap) => gap.start_seq <= throughSeq)) throw fail("branch_history_gap", "此处历史不完整，无法创建分支。");
+        if (!page.events.length) break;
+        for (const event of page.events) {
+          if (event.seq > throughSeq) break;
+          const p = event.payload ?? {};
+          let message = null;
+          if (event.type === "input_queued") queued.set(p.input_id, p.text);
+          if (event.type === "input_started") {
+            const text = queued.get(p.input_id);
+            queued.delete(p.input_id);
+            if (text) message = { role: "user", text };
+          }
+          if (event.type === "run_started") {
+            if (stream) message = { role: "assistant", text: stream, interrupted: true };
+            stream = "";
+          }
+          if (event.type === "model_turn_started") stream = "";
+          if (event.type === "assistant_message_delta") stream += p.text ?? "";
+          if (event.type === "assistant_message_completed") {
+            const text = p.text || stream;
+            if (text) message = { role: "assistant", text, truncated: p.truncated === true };
+            stream = "";
+          }
+          if (event.type === "message_imported") message = { role: p.role, text: p.text, truncated: p.truncated === true, interrupted: p.interrupted === true };
+          if (stream && (["run_completed", "run_failed", "run_cancelled", "run_interrupted"].includes(event.type)
+              || (event.type === "run_status_changed" && ["waiting_user", ...TERMINAL_RUN_STATUSES].includes(p.status)))) {
+            message = { role: "assistant", text: stream, interrupted: true };
+            stream = "";
+          }
+          if (message) messages.push({ ...message, text: redactText(message.text), source_session_id: sessionId, source_event_id: event.event_id });
+          afterSeq = event.seq;
+          if (event.seq === throughSeq) { found = event.event_id === eventId; break; }
+        }
+        if (afterSeq >= throughSeq) break;
+      }
+      if (!found || messages.at(-1)?.role !== "assistant" || messages.at(-1).source_event_id !== eventId) {
+        throw fail("branch_point_changed", "这条回复已变化，请刷新后重试。");
+      }
+      const meta = await state.registry.get(sessionId);
+      const branch = await state.registry.create({ title: `${meta.title} · 分支` });
+      const targetRoot = path.resolve(state.agentRoot, "sessions", branch.session_id);
+      try {
+        const target = await resolveSessionState(state, branch.session_id);
+        await target.journal.appendBatch(messages.map((payload) => ({ type: "message_imported", run_id: null, payload })));
+        for (const message of messages) await target.journal.appendSafeTranscript({ role: message.role, content: message.text });
+        return branch;
+      } catch (error) {
+        await state.registry.removePermanently(branch.session_id);
+        await state.registry.setLastActive(sessionId);
+        state.sessions.delete(branch.session_id);
+        if (path.dirname(targetRoot) === path.resolve(state.agentRoot, "sessions")) await fs.rm(targetRoot, { recursive: true, force: true });
+        throw error;
+      }
+    });
   }
 
   async function renameSession({ projectRoot, sessionId, title }) {
@@ -216,6 +289,6 @@ export function createSessionManager(ctx) {
     return { seq: null };
   }
 
-  return { syncSessionRegistry, autoNameSessionIfDefault, sessions, newSession,
+  return { syncSessionRegistry, autoNameSessionIfDefault, sessions, newSession, forkSession,
            renameSession, archiveSession, restoreSession, deleteSession, appendSystemEvent };
 }

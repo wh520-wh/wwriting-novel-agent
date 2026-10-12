@@ -42,6 +42,7 @@ async function setupServer(t, harnessOptions = {}, routeOptions = {}) {
     secretsRoot,
     projectLocks,
     agent: h.agent,
+    workspaceStore: createWorkspaceStore({ stateRoot }),
     selection
   });
   const settingsRoutes = createSettingsRoutes({
@@ -71,6 +72,29 @@ async function setupServer(t, harnessOptions = {}, routeOptions = {}) {
     ...server
   };
 }
+
+test("普通文件夹 dashboard 显示已保存的模型、权限和思考强度", async (t) => {
+  const s = await setupServer(t);
+  const folder = path.join(s.workspace, "plain-folder");
+  await fs.mkdir(folder);
+  await s.post("/api/projects/open", { projectRoot: folder });
+  await createWorkspaceStore({ stateRoot: s.stateRoot }).saveSettings(folder, {
+    active_model: { provider: "openai-compatible", model_name: "plain-model", base_url: "https://example.invalid/v1", api_key_env: "FIXTURE_KEY" },
+    tool_permissions: { safe_edit: true, auto_edit: true }
+  });
+  const updated = await s.post("/api/settings/update", { projectRoot: folder, reasoning_effort: "high" });
+  assert.equal(updated.res.status, 200, "普通文件夹应能保存思考强度");
+  const permissions = await s.post("/api/settings/update", { projectRoot: folder, tool_permissions: { auto_edit: true } });
+  assert.equal(permissions.res.status, 200, "随后保存权限不应清掉模型和思考强度");
+  const { res, data } = await s.get(`/api/dashboard?projectRoot=${encodeURIComponent(folder)}`);
+  assert.equal(res.status, 200);
+  assert.equal(data.project, null, "普通文件夹不伪装成结构化作品");
+  assert.equal(data.config?.effective?.active_model?.model_name, "plain-model");
+  assert.equal(data.config.effective.tool_permissions.auto_edit, true);
+  assert.equal(data.config.effective.reasoning_effort, "high");
+  assert.match(data.model_profile?.display ?? "", /plain-model/u);
+  await assert.rejects(fs.access(path.join(folder, "project.yaml")));
+});
 
 // 构造已提交章节（final 文件 + 章节索引），供 export-book 使用。
 async function createCommittedChapter(projectRoot, chapterNo, title, body) {

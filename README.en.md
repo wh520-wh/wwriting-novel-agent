@@ -59,6 +59,8 @@ You can watch what the agent is doing at any moment. Interrupt it and it resumes
 - **One chat surface**: writing, review, initialization, and questions all start from the same conversation — no mode switching, no workflow picker.
 - **Open any folder**: empty directories, plain material folders, legacy projects, and Git repos share the same chat entry point; `project.yaml`, an outline, or a chapter directory is not required to chat.
 - **Live visibility**: the agent's state (thinking / reading files / running commands / waiting for confirmation) shows as work-group items in real time; reasoning streams separately from body text, with real elapsed time and folding.
+<!-- Recorded on: 2026-10-12 | Status: current | Basis: behavior contract §§4.9, 4.10, 24. -->
+- **Generation and reply actions**: manuscript layout stays consistent while streaming and after completion, with text selection preserved. Copy the original reply or branch from it into a new conversation that inherits earlier visible messages and shares the project files. Successful writes show a separate saved-result line.
 - **Visible plan**: complex tasks show a plan that marks items done as execution proceeds, collapsing for review when the run ends.
 - **Queue and interrupt**: messages sent mid-run enter a FIFO queue (original text + `排队`); `立即` interrupts the current round and promotes them, `停止` converges cleanly and clears temporary grants — neither spawns a second agent.
 - **Parallel workspaces / multiple conversations**: different workspaces run in parallel; one project can hold multiple independent conversations (two-level sidebar tree) with serialized execution to keep shared state consistent.
@@ -86,7 +88,7 @@ You can watch what the agent is doing at any moment. Interrupt it and it resumes
 
 ### Option 1: installer (recommended)
 
-Download `WWriting Novel Agent-0.5.3-Setup.exe` from [Releases](https://github.com/wh520-wh/wwriting-novel-agent/releases). No Node environment needed.
+Download `WWriting Novel Agent-0.5.4-Setup.exe` from [Releases](https://github.com/wh520-wh/wwriting-novel-agent/releases). No Node environment needed.
 
 ### Option 2: run from source
 

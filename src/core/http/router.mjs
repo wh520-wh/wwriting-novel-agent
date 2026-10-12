@@ -48,6 +48,7 @@ const STATUS_400_CODES = new Set([
   // Task 5 会话 CRUD：sessionId/title 校验
   "invalid_session_id",
   "invalid_session_title",
+  "invalid_branch_point",
   // 项目/设置领域
   "invalid_settings_patch",
   "INVALID_WORKSPACE_SCOPE",
@@ -84,6 +85,8 @@ const STATUS_409_CODES = new Set([
   // 该会话自身运行中（session_busy，前端提示删除冲突；运行中检查仅 deleteSession 有）
   "project_busy",
   "session_busy",
+  "branch_history_gap",
+  "branch_point_changed",
   // 第九轮：版本恢复互斥 / 已是当前版本
   "already_current",
   "agent_running"

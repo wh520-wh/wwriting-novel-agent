@@ -11,6 +11,7 @@
 //     session_not_found → 404、invalid_session_id / invalid_session_title → 400
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createProjectAgent } from "../../src/core/agent/index.mjs";
 import { createRouter } from "../../src/core/http/router.mjs";
 import { createAgentRoutes } from "../../src/core/http/agent-routes.mjs";
 import { startHttpServer } from "../helpers/http-test.mjs";
@@ -52,6 +53,50 @@ async function del(s, route) {
 function sessionsUrl(root) {
   return `/api/agent/sessions?projectRoot=${encodeURIComponent(root)}`;
 }
+
+test("从旧回复分支：保留此前上下文、排除后续消息、重启可读且原聊天不变", async (t) => {
+  const s = await setupServer(t, { gatewayScript: [{ reply: { text: "开篇正文。" } }, { reply: { text: "后续正文。" } }, { reply: { text: "另一条路线。" } }] });
+  const root = s.h.projectRoot;
+  const input = await s.post("/api/agent/input", { projectRoot: root, text: "写一个雨夜开篇" });
+  const sourceId = input.data.session_id;
+  await waitForIdle(s.h.agent, root);
+  await s.post("/api/agent/input", { projectRoot: root, sessionId: sourceId, text: "继续追查来信" });
+  await waitForIdle(s.h.agent, root);
+  const snapshotUrl = (id) => `/api/agent/snapshot?projectRoot=${encodeURIComponent(root)}&sessionId=${id}&limit=1000`;
+  const before = (await s.get(snapshotUrl(sourceId))).data;
+  const anchor = before.events.find((event) => event.type === "assistant_message_completed");
+  const route = `/api/agent/sessions/${sourceId}/fork`;
+  const stale = await s.post(route, { projectRoot: root, throughSeq: anchor.seq, eventId: "stale-event" });
+  assert.equal(stale.res.status, 409);
+  const invalid = await s.post(route, { projectRoot: root, throughSeq: -1, eventId: anchor.event_id });
+  assert.equal(invalid.res.status, 400);
+  assert.equal((await s.get(sessionsUrl(root))).data.sessions.length, 1);
+  const fork = await s.post(route, { projectRoot: root, throughSeq: anchor.seq, eventId: anchor.event_id });
+  assert.equal(fork.res.status, 200, JSON.stringify(fork.data));
+  const branchId = fork.data.session.session_id;
+  assert.notEqual(branchId, sourceId);
+  const branch = (await s.get(snapshotUrl(branchId))).data;
+  assert.equal(branch.session.status, "idle");
+  assert.equal(branch.session.active_run, null);
+  assert.deepEqual(branch.events.filter((event) => event.type === "message_imported").map((event) => [event.payload.role, event.payload.text]), [
+    ["user", "写一个雨夜开篇"], ["assistant", "开篇正文。"]
+  ]);
+  assert.equal(s.h.gateway.calls.length, 2, "创建分支不调用模型");
+  assert.deepEqual((await s.get(snapshotUrl(sourceId))).data.events, before.events, "原聊天事件不变");
+  await s.post("/api/agent/input", { projectRoot: root, sessionId: branchId, text: "换一个方向" });
+  await waitForIdle(s.h.agent, root);
+  const context = s.h.gateway.calls.at(-1).request.messages;
+  assert.ok(context.some((message) => message.role === "user" && message.content === "写一个雨夜开篇"));
+  assert.ok(context.some((message) => message.role === "assistant" && message.content === "开篇正文。"));
+  assert.ok(!context.some((message) => ["继续追查来信", "后续正文。"].includes(message.content)));
+  const importedAnchor = branch.events.find((event) => event.type === "message_imported" && event.payload.role === "assistant");
+  const nested = await s.post(`/api/agent/sessions/${branchId}/fork`, { projectRoot: root, throughSeq: importedAnchor.seq, eventId: importedAnchor.event_id });
+  assert.equal(nested.res.status, 200);
+  const reopenedAgent = createProjectAgent({ modelGateway: s.h.gateway, skills: s.h.skills, agentStorageRootFor: (projectRoot) => s.h.store.agentRootFor(projectRoot) });
+  await reopenedAgent.open({ projectRoot: root, sessionId: nested.data.session.session_id });
+  const reopened = await reopenedAgent.snapshot({ projectRoot: root, sessionId: nested.data.session.session_id, limit: 1000 });
+  assert.deepEqual(reopened.events.filter((event) => event.type === "message_imported").map((event) => event.payload.text), ["写一个雨夜开篇", "开篇正文。"]);
+});
 
 // ---------------------------------------------------------------------------
 // sessions CRUD 全链路

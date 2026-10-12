@@ -651,10 +651,12 @@ async function processInput(state, sessionState, runId, inputId, inputText) {
     // 轮是工具轮），再检查安全点——被打断的回复在中断路径用 cancelled 工具记录
     // 闭合 transcript，绝不留下悬空的 assistant tool_calls（retry/history 复用）。
     const toolCalls = Array.isArray(reply?.toolCalls) && reply.toolCalls.length > 0 ? reply.toolCalls : null;
+    const text = String(reply?.text ?? "");
+    const safeText = redactor.redact(text);
     if (toolCalls) {
       const assistantToolRecord = {
         role: "assistant",
-        content: null,
+        content: safeText || null,
         // 思考回传契约：本轮思考随 assistant 记录持久化，历史装配层据此在后续
         // 请求里回传 reasoning_content（官方 thinking_mode 契约，工具轮强制）。
         ...(reasoningResult.safeText ? { reasoning: reasoningResult.safeText } : {}),
@@ -687,6 +689,14 @@ async function processInput(state, sessionState, runId, inputId, inputText) {
       return "interrupted";
     }
 
+    if (streamedReply?.rawText && streamedReply.safeText !== safeText) {
+      const error = new Error("Provider token stream 与最终正文不一致。");
+      error.code = "provider_stream_mismatch";
+      if (toolCalls) await sessionState.lifecycle.closeDroppedToolCalls(toolCalls);
+      await sessionState.lifecycle.failRun(runId, { error, inputId });
+      return "failed";
+    }
+
     // Task 10：优先安全点（模型响应完成后）。仅当本响应携带尚未开始的工具
     // 调用时切换——全部跳过（tool_skipped_for_priority_input 闭合 transcript），
     // 旧输入 input_interrupted + 优先输入 input_started（同一批次）；纯文本响应
@@ -698,6 +708,11 @@ async function processInput(state, sessionState, runId, inputId, inputText) {
     }
 
     if (toolCalls) {
+      if (safeText) await journal.append({
+        type: "assistant_message_completed",
+        run_id: runId,
+        payload: { input_id: inputId, text: safeText, ...(reply?.raw?.finish_reason === "length" ? { truncated: true } : {}) }
+      });
       for (let index = 0; index < toolCalls.length; index += 1) {
         const toolCall = toolCalls[index];
         // 停止/立即安全点：阻止新工具启动，等待当前原子操作；尚未执行的
@@ -799,16 +814,8 @@ async function processInput(state, sessionState, runId, inputId, inputText) {
     }
 
     // ---- 文本回复：当前输入完成 ----
-    const text = String(reply?.text ?? "");
     // completed 仍以最终回复的一次性脱敏为权威；正常 Provider 契约下，流式
     // redactor 的拼接结果与这里严格一致。非流式 Gateway 没有 delta，直接终态。
-    const safeText = redactor.redact(text);
-    if (streamedReply?.rawText && streamedReply.safeText !== safeText) {
-      const error = new Error("Provider token stream 与最终正文不一致。");
-      error.code = "provider_stream_mismatch";
-      await sessionState.lifecycle.failRun(runId, { error, inputId });
-      return "failed";
-    }
     await appendSafeTranscript(journal, {
       role: "assistant",
       content: text,

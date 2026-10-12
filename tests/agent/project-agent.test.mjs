@@ -655,7 +655,7 @@ test("非流式 Gateway 只产生 completed，不把最终正文二次切块", a
   assert.equal(completed[completed.length - 1].payload.text, longText);
 });
 
-test("工具调用后的新模型轮次重置临时正文，只保留最终答复", async (t) => {
+test("工具轮次正文先定稿，后续答复不会清除先前正文，模型历史同样保留", async (t) => {
   const h = await openHarness(t, {
     gatewayScript: [
       async (request) => {
@@ -678,7 +678,8 @@ test("工具调用后的新模型轮次重置临时正文，只保留最终答�
 
   assert.equal(snapshot.session.active_run.assistant_text, "这是最终答复。");
   const completed = eventsOfType(snapshot.events, "assistant_message_completed");
-  assert.equal(completed.at(-1).payload.text, "这是最终答复。");
+  assert.deepEqual(completed.map((event) => event.payload.text), ["正在读取资料……", "这是最终答复。"]);
+  assert.ok(h.gateway.calls[1].request.messages.some((message) => message.role === "assistant" && message.content === "正在读取资料……"));
 });
 
 test("运行中 submit 进入 FIFO 队列，不创建第二个 Run", async (t) => {

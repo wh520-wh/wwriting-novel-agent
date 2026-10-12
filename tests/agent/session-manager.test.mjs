@@ -46,6 +46,27 @@ test("deriveSessionTitle：空回落「新对话」，折叠空白并截断 20 �
   assert.ok(!long.includes("  "), "不含连续空白");
 });
 
+test("分支持久化失败清理新会话，恢复原会话指针；历史缺口拒绝导入", async (t) => {
+  let sourceId;
+  let gap = false;
+  const events = [
+    { seq: 1, event_id: "q", type: "input_queued", payload: { input_id: "i", text: "开篇" } },
+    { seq: 2, event_id: "s", type: "input_started", payload: { input_id: "i" } },
+    { seq: 3, event_id: "a", type: "assistant_message_completed", payload: { text: "正文" } }
+  ];
+  const { state, manager } = await makeHarness(t, { resolveSessionState: async (_state, id) => id === sourceId
+    ? { journal: { load: async () => {}, readAfter: async () => ({ events, gaps: gap ? [{ start_seq: 1, end_seq: 2 }] : [] }) } }
+    : { journal: { appendBatch: async () => {}, appendSafeTranscript: async () => { throw new Error("fixture write failure"); } } } });
+  sourceId = (await manager.newSession({ projectRoot: "/p", title: "原聊天" })).session_id;
+  const params = { projectRoot: "/p", sessionId: sourceId, throughSeq: 3, eventId: "a" };
+  await assert.rejects(manager.forkSession(params), /fixture write failure/);
+  assert.deepEqual((await state.registry.list()).map((meta) => meta.session_id), [sourceId]);
+  assert.equal(await state.registry.getLastActive(), sourceId);
+  gap = true;
+  await assert.rejects(manager.forkSession(params), { code: "branch_history_gap" });
+  assert.equal((await state.registry.list()).length, 1);
+});
+
 test("新建→重命名→归档→恢复→删除一串走查，registry 状态迁移正确", async (t) => {
   const { root, state, manager } = await makeHarness(t);
 

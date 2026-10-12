@@ -1,7 +1,7 @@
 // 统一 Agent 内核计划 Task 9 改写（Task 12 更新）：UI 布局契约。
 //
 // 保留的布局基线：
-//   - 共享 1040px 内容列：AgentSurface 对话与 composer 使用 --content-column（agent.css）；
+//   - 滚动区/输入台全宽，消息和状态保留 1040px 内容列（agent.css）；
 //   - composer 菜单从触发器向上浮出，并保留 16px 视口安全区（agent.css）；
 //   - 设置弹窗只暴露普通作者真正需要的写作参数、技能和项目管理（模型配置在
 //     Task 12 起迁往独立的 model-settings-page，Task 17 cutover 后弹窗不再有模型分区）；
@@ -22,18 +22,18 @@ const cssSource = await fs.readFile(path.join(srcDir, "styles.css"), "utf8");
 const agentCssSource = await fs.readFile(path.join(srcDir, "agent", "agent.css"), "utf8");
 const settingsSource = await fs.readFile(path.join(srcDir, "settings-modal.js"), "utf8");
 
-test("共享内容列：AgentSurface 对话与 composer 使用同一 1040px 列", () => {
+test("内容列：消息和状态封顶 1040px，滚动区与输入台铺满画布", () => {
   assert.match(cssSource, /--content-column:\s*1040px/u, "styles.css 应定义 1040px 内容列变量");
   assert.doesNotMatch(agentCssSource, /--content-column:\s*1040px/u, "agent.css 只引用不重声明内容列变量（token 所有权在 styles.css）");
   assert.match(
     agentCssSource,
-    /\.agent-conversation[\s\S]*max-width:\s*var\(--content-column\)/u,
-    "对话应共享 max-width: var(--content-column)"
+    /\.agent-messages,\s*\.agent-run,\s*\.agent-queue\s*\{[^}]*width:\s*min\(100%,\s*var\(--content-column\)\)/u,
+    "消息和状态保留内容列上限"
   );
   assert.match(
     agentCssSource,
-    /\.agent-composer[\s\S]*max-width:\s*var\(--content-column\)/u,
-    "composer 应共享 max-width: var(--content-column)"
+    /\.agent-conversation,\s*\.agent-composer\s*\{[^}]*width:\s*100%/u,
+    "滚动区与输入台全宽，避免右侧空槽"
   );
 });
 
@@ -131,11 +131,11 @@ test("对话控制面提供即时反馈、清晰材料层与完整无障碍降�
   );
 });
 
-test("次级操作融入背景，消息层级不依赖成排胶囊按钮", () => {
+test("主入口使用轻表面，次级操作融入背景", () => {
   assert.match(
     cssSource,
-    /\.new-btn\s*\{[^}]*background:\s*transparent;[^}]*border:\s*1px solid transparent;/u,
-    "新建入口应表现为侧栏行，而不是独立实心按钮"
+    /\.new-btn\s*\{[^}]*background:\s*var\(--surface\);[^}]*border:\s*1px solid var\(--line\);/u,
+    "新建入口应以浅色表面和细边界区分于次级导航"
   );
   assert.match(
     cssSource,
@@ -144,8 +144,8 @@ test("次级操作融入背景，消息层级不依赖成排胶囊按钮", () =>
   );
   assert.match(
     agentCssSource,
-    /--agent-user-bg:\s*var\(--rail\);/u,
-    "用户消息应使用安静的浅中性表面（引用全局 rail 表面 primitive）"
+    /--agent-user-bg:\s*var\(--surface-3\);/u,
+    "用户消息应使用中性表面（引用全局 surface-3 primitive）"
   );
   assert.match(
     agentCssSource,
@@ -174,12 +174,7 @@ test("次级操作融入背景，消息层级不依赖成排胶囊按钮", () =>
 // ===========================================================================
 
 test("冻结布局约束：390/768/1280 无横向溢出（百分比优先 + 固定上限）", () => {
-  // 四档视口宽度推演（对话内容宽 = min(视口, 1040px) - 左右各 gutter 内边距）：
-  //   390px  → 内容约 358px：用户 ≤min(800px,100%-32px)=326px、助手 ≤min(100%,阅读列)=358px、工作组 358px；
-  //   768px  → 内容约 728px：用户 ≤696px、助手 ≤728px、工作组 728px；
-  //   1280px → 内容约 1040px（列封顶 1040px）：用户 ≤800px、助手 ≤阅读列、工作组 1040px。
-  // 百分比项 ≤ 容器自身宽度，固定上限只在容器足够宽时封顶，因此各档都不会撑出横向滚动。
-  // Round10：轴值走全局 token（--reading-column=720px / --content-column=1040px）。
+  // 百分比项不超过容器宽度；正文 720px、消息列 1040px 只在宽屏封顶。
   assert.match(agentCssSource, /max-width:\s*min\(800px,\s*calc\(100% - 32px\)\)/u, "用户消息：封顶 800px，留 32px 边距");
   assert.match(
     agentCssSource,
@@ -189,11 +184,11 @@ test("冻结布局约束：390/768/1280 无横向溢出（百分比优先 + 固�
   assert.match(agentCssSource, /width:\s*min\(100%,\s*var\(--content-column\)\)/u, "工作组：100% 优先，封顶内容列 token");
   // 长内容（URL/代码/长单词）原地换行，不撑破消息容器。
   assert.match(agentCssSource, /\.agent-message-text\s*\{[^}]*overflow-wrap:\s*anywhere/u, "消息文本应任意位置换行");
-  // 对话容器本身 width:min(100%,内容列) + box-sizing:border-box，padding 计入宽度不溢出。
+  // 滚动区与输入台全宽，padding 计入宽度，不产生横向溢出。
   assert.match(
     agentCssSource,
-    /\.agent-conversation,\s*\.agent-composer\s*\{[^}]*width:\s*min\(100%,\s*var\(--content-column\)\)[^}]*max-width:\s*var\(--content-column\)/u,
-    "对话与 composer 共享内容列 token"
+    /\.agent-conversation,\s*\.agent-composer\s*\{[^}]*width:\s*100%/u,
+    "滚动区与输入台保留全宽布局"
   );
   assert.match(
     agentCssSource,

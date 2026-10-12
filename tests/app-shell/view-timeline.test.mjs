@@ -215,6 +215,44 @@ function makeTimeline({ scheduleFrame = (cb) => cb() } = {}) {
   return { timeline: createTimelineView(ctx), ctx, shared, messages, conv, timelineSeqs, messageNodes, pendingSubmissions, failedSubmissions };
 }
 
+test("流式回复原地定稿，复制取完整原文，分支取所选消息锚点", async () => {
+  const h = makeTimeline();
+  const state = { lastSeq: 10, revisions: { messages: 1 }, conversation: [], assistantStream: { text: "```稿\n夜雨敲窗。" } };
+  h.shared.currentState = state;
+  h.timeline.syncStream(state);
+  const bubble = h.messages.children[0];
+  const textNode = bubble.querySelector(".agent-message-text");
+  assert.equal(bubble.querySelector('[data-testid="agent-message-branch"]').disabled, true);
+  state.assistantStream = null;
+  const entry = { role: "assistant", text: "```稿\n夜雨敲窗。\n```", seq: 11, event_id: "event-11", event_key: "done-11" };
+  state.conversation = [entry];
+  state.revisions.messages += 1;
+  h.timeline.syncMessages(state);
+  h.timeline.syncStream(state);
+  assert.equal(h.messages.children[0], bubble, "完成后保留原消息节点");
+  assert.equal(bubble.querySelector(".agent-message-text"), textNode);
+  assert.equal(bubble.querySelector(".agent-stream-caret"), null);
+  assert.equal(h.messages.children.length, 1);
+  const branch = bubble.querySelector('[data-testid="agent-message-branch"]');
+  let selected;
+  h.shared.actions = { forkMessage: async (message) => { selected = message; } };
+  await branch._listeners.get("click")[0]();
+  assert.equal(selected, entry);
+  const previous = Object.getOwnPropertyDescriptor(globalThis.navigator, "clipboard");
+  let copied;
+  Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: async (text) => { copied = text; } } });
+  try {
+    const copy = bubble.querySelector('[data-testid="agent-message-copy"]');
+    await copy._listeners.get("click")[0]();
+    assert.equal(copied, entry.text, "不复制状态、字数和按钮文字");
+    assert.equal(copy.getAttribute("aria-label"), "已复制");
+  } finally {
+    h.timeline.destroy();
+    if (previous) Object.defineProperty(globalThis.navigator, "clipboard", previous);
+    else delete globalThis.navigator.clipboard;
+  }
+});
+
 test("F17：移除路径清空 timelineSeqs 索引（removeNode 收口）", () => {
   const { timeline, timelineSeqs, messages, failedSubmissions, messageNodes } = makeTimeline();
 

@@ -22,6 +22,7 @@
 // Task 5 会话 CRUD：
 //   GET    /api/agent/sessions?projectRoot                -> { ok, sessions, active_session_id }
 //   POST   /api/agent/sessions          { projectRoot, title? } -> { ok, session }
+//   POST   /api/agent/sessions/:sessionId/fork { projectRoot, throughSeq, eventId } -> { ok, session }
 //   PATCH  /api/agent/sessions/:sessionId { projectRoot, title? | archived?: true|false } -> { ok, session }
 //   DELETE /api/agent/sessions/:sessionId?projectRoot     -> { ok, session_id }（永久删除）
 //
@@ -343,6 +344,12 @@ export function createAgentRoutes({ agent, resolveProjectRoot = null, eventsPoll
       const projectRoot = await resolveScope(body);
       const title = body?.title === undefined ? undefined : requireTitle(body);
       const session = await agent.newSession({ projectRoot, title });
+      return { ok: true, session };
+    },
+
+    "POST /api/agent/sessions/:sessionId/fork": async ({ params, body }) => {
+      const projectRoot = await resolveScope(body);
+      const session = await agent.forkSession({ projectRoot, sessionId: params.sessionId, throughSeq: body?.throughSeq, eventId: body?.eventId });
       return { ok: true, session };
     },
 

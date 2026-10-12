@@ -145,17 +145,19 @@ async function main() {
   const win = new BrowserWindow({
     width: 1280,
     height: 860,
-    show: true,
+    show: false,
     backgroundColor: "#f4f3f0",
     autoHideMenuBar: true,
     ...desktopWindowChrome(process.platform, false),
     webPreferences: {
+      offscreen: true,
       preload: path.join(rootDir, "src", "desktop", "electron-preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false
     }
   });
   const consoleMessages = [];
+  win.webContents.on("paint", () => {});
   win.webContents.on("console-message", (_event, _level, message) => {
     consoleMessages.push({ message });
   });
@@ -186,6 +188,7 @@ async function main() {
   assert.equal(rowClicked, true, "普通文件夹行必须中心可命中并点击");
   await waitUntil(win, "document.querySelector('[data-testid=\"agent-composer-input\"]') !== null && !document.querySelector('[data-testid=\"agent-composer-input\"]').disabled", "AgentSurface composer must enable after opening the plain folder", 10000);
   await waitUntil(win, "document.querySelector('[data-testid=\"agent-surface\"]') !== null", "AgentSurface must mount", 10000);
+  assert.notEqual(await read(win, "getComputedStyle(document.querySelector('.agent-composer-shell')).boxShadow"), "none", "浅色输入台阴影必须实际生效，不能仅定义无效 CSS 变量");
 
   // D17（round22）：点「+」后 500ms 内必须出现草稿行（D3 可证伪反馈，不等网络），
   // 顶栏显示文件夹名（D1），草稿行不参与高亮（D2：全局唯一活跃）。
@@ -342,6 +345,7 @@ async function main() {
   }));
   await waitUntil(win, "document.querySelectorAll('.provider-item').length >= 1", "provider list must render in model settings", 8000);
   await waitUntil(win, "document.querySelectorAll('.model-row').length >= 1", "model rows must render in model settings", 8000);
+  assert.notEqual(await read(win, "getComputedStyle(document.querySelector('.settings-modal')).boxShadow"), "none", "浅色设置浮层阴影必须实际生效");
   const settingsOperable = await read(win, `(() => ({
     providers: [...document.querySelectorAll('.provider-item')].map((el) => el.textContent.trim()),
     modelRows: document.querySelectorAll('.model-row').length,
@@ -469,6 +473,10 @@ async function main() {
   `);
   // 窄窗口仍能发送，权限菜单不被工具栏的 overflow 裁掉。
   win.setContentSize(390, 844);
+  await read(win, `(() => {
+    document.querySelector('.agent-composer-menu--model .agent-composer-menu-value').textContent = '长名称供应商 / 长名称写作模型';
+    document.querySelector('.agent-composer-menu--permission .agent-composer-menu-value').textContent = '自动修改';
+  })()`);
   await delay(250);
   assert.equal(await read(win, `(() => {
     const send = document.querySelector('[data-testid="agent-send"]');

@@ -253,6 +253,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     conv,
     scheduleFrame,
     showToast,
+    viewIcon,
     timelineSeqs,
     messageNodes,
     pendingSubmissions,
@@ -280,7 +281,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     scheduler,
     viewIcon,
     get currentState() { return currentState; },
-    get actions() { return actions; }
+    get actions() { return actions; },
+    get followLatest() { return followLatest; }
   });
 
   function reset() {
@@ -441,6 +443,12 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   }
 
   function render(state, actionBag = {}) {
+    const selection = doc.getSelection?.();
+    const preserveReading = !followLatest || (selection && !selection.isCollapsed);
+    const top = conv.getBoundingClientRect?.().top;
+    const anchor = preserveReading && top != null
+      ? [...messages.querySelectorAll(".agent-message--assistant .agent-message-text")].find((el) => el.getBoundingClientRect().bottom > top) : null;
+    const anchorTop = anchor?.getBoundingClientRect().top;
     actions = actionBag;
     currentState = state;
     timeline.syncMessages(state);
@@ -459,6 +467,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     }
     cards.syncQueue(state);
     composerView.syncComposer(state);
+    if (anchor?.isConnected) conv.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
   }
 
   function setLoadingEarlier(enabled) {

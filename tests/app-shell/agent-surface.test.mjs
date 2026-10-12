@@ -1229,7 +1229,7 @@ test("多 Run：首个完成组的终态耗时保持自身值，不被第二个 
   const groups = [...root.querySelectorAll(".agent-work-group")];
   assert.equal(groups.length, 2, "两个工作组");
   assert.equal(groups[0].querySelector(".agent-work-status").textContent, "工作了 10 秒", "Run A 文案保持自身值");
-  assert.equal(groups[1].querySelector(".agent-work-status").textContent, "工作中", "Run B 运行中文案");
+  assert.equal(groups[1].querySelector(".agent-work-status").textContent, "思考中", "Run B 按真实活动显示阶段");
   assert.equal(groups[1].open, true, "Run B 运行中展开");
 });
 
@@ -2476,7 +2476,7 @@ test("reasoning ticker：增量替换复用同一元素，高度锁定固定两�
 });
 
 // ===========================================================================
-// 布局基线：agent.css 保留 1040px 内容列与模型菜单视口钳制
+// 布局基线：全宽滚动区/输入台，消息保留内容列，模型菜单视口钳制
 // ===========================================================================
 
 test("agent.css 保留内容列 token、向上菜单与工作组/动效布局", async () => {
@@ -2486,8 +2486,13 @@ test("agent.css 保留内容列 token、向上菜单与工作组/动效布局", 
   assert.doesNotMatch(css, /--content-column\s*:/u, "agent.css 不得重新声明内容列");
   assert.match(
     css,
-    /\.agent-conversation,\s*\.agent-composer\s*\{[^}]*width:\s*min\(100%,\s*var\(--content-column\)\)[^}]*max-width:\s*var\(--content-column\)/u,
-    "对话与 composer 共享内容列 token"
+    /\.agent-conversation,\s*\.agent-composer\s*\{[^}]*width:\s*100%/u,
+    "滚动区与输入台铺满画布，避免宽屏右侧空槽"
+  );
+  assert.match(
+    css,
+    /\.agent-messages,\s*\.agent-run,\s*\.agent-queue\s*\{[^}]*width:\s*min\(100%,\s*var\(--content-column\)\)[^}]*margin-inline:\s*auto/u,
+    "消息和状态保留居中内容列，正文阅读宽度不随输入台扩张"
   );
   assert.match(
     css,
@@ -3140,6 +3145,19 @@ function menuOption(root, testid, value) {
   return [...root.querySelectorAll(`[data-testid="${testid}"]`)]
     .find((option) => option.dataset.value === value);
 }
+
+test("首次聊天快照保留已加载的模型、权限和思考强度", async () => {
+  const { root, surface } = await makeSurface({
+    apiOverrides: { fetchComposerOptions: async () => composerOptionsData({ reasoningEffort: "high" }) }
+  });
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ session_id: "first-chat" })));
+  for (const [id, label] of [["model", "我的 DeepSeek 中转 / deepseek-reasoner"], ["permission", "确认后修改"], ["effort", "高"]]) {
+    const control = root.querySelector(`[data-testid="agent-${id}-select"]`);
+    assert.equal(control.disabled, false, `${label} 不应因首条快照变为禁用`);
+    assert.equal(control.textContent, label);
+  }
+});
 
 test("composer 三控件：openProject 后加载选项并渲染（testid 齐全）", async () => {
   const { root, surface } = await makeSurface({
@@ -4328,7 +4346,7 @@ test("Task 11 CSS：popover 过渡、压缩行、主题 token 与 reduced-motion
   // 浅色/深色自适应：popover 背景由 theme token 驱动，无硬编码色值
   assert.match(
     css,
-    /\.agent-context-popover\s*\{[^}]*background:\s*color-mix\([^}]*var\(--agent-panel-solid\)[^}]*\}/u,
+    /\.agent-context-popover\s*\{[^}]*background:\s*var\(--agent-panel\)/u,
     "popover 背景使用 theme token（浅色/深色自适应）"
   );
   assert.match(css, /\.agent-context-ring\s*\{[^}]*cursor:\s*pointer/u, "圆环按钮样式存在");
@@ -5228,7 +5246,21 @@ test("流式光标：delta 渲染实心光标于正文末尾，completed 定稿�
 });
 
 // AICSS thinking-reasoning：片段滚动替换——新片段显示时重启替换动效 class。
-test("AICSS 思考片段：ticker 显示新片段时挂 agent-ticker-swap 动效类", async () => {
+test("思考到正文流的阶段即时切换，正文定稿后不残留生成中", async () => {
+  const { root, surface } = await makeSurface();
+  await surface.openProject("D:\\novel");
+  surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+  surface.applyEvent(ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }));
+  assert.equal(root.querySelector(".agent-work-status").textContent, "思考中");
+  surface.applyEvent(ev("assistant_message_delta", { text: "雨落在窗沿。" }));
+  assert.equal(root.querySelector(".agent-work-status").textContent, "正在生成");
+  surface.applyEvent(ev("reasoning_completed", { turn_id: "turn-1", text: "已确定场景。", availability: "available" }));
+  surface.applyEvent(ev("assistant_message_completed", { text: "雨落在窗沿。" }));
+  assert.notEqual(root.querySelector(".agent-work-status").textContent, "正在生成");
+  surface.destroy();
+});
+
+test("思考片段替换只做短淡入，不改变文字位置", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
@@ -5237,10 +5269,13 @@ test("AICSS 思考片段：ticker 显示新片段时挂 agent-ticker-swap 动效
   await tick();
   const ticker = root.querySelector(".agent-reasoning-ticker");
   assert.equal(ticker.textContent, "先检查事实。");
+  const animations = [];
+  ticker.animate = (frames, options) => animations.push({ frames, options });
   surface.applyEvent(ev("reasoning_delta", { turn_id: "turn-1", input_id: "in-1", text: "再核对设定。" }));
   await tick();
   assert.equal(ticker.textContent, "再核对设定。");
-  assert.ok(ticker.classList.contains("agent-ticker-swap"), "新片段应挂替换动效类");
+  assert.deepEqual(animations[0].frames, [{ opacity: 0.45 }, { opacity: 1 }]);
+  assert.equal(animations[0].options.duration, 160);
 });
 
 // ===========================================================================

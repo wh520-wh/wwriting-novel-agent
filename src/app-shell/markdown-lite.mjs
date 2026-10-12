@@ -10,7 +10,7 @@
 //   - 稿/prose fenced block → manuscript-block block extension（round17 已随隐私
 //     模式删除 peek class）；
 //   - countProseWords() 字数标；cleanAssistantContent() 工具调用泄漏清洗。
-// 流式未闭合 fence：稿块按纯文本段落回退（延续旧渲染器行为）；普通围栏按 GFM
+// 流式未闭合 fence：稿块保持文稿排版，字数暂时隐藏；普通围栏按 GFM
 // 语义渲染为进行中的代码块。
 
 import { marked } from "marked";
@@ -116,8 +116,7 @@ marked.use({ extensions: [{ name: "manuscriptFence", level: "block", start(src) 
 // 稿/prose fenced block（marked block extension，单解析器路径）
 // ---------------------------------------------------------------------------
 // tokenizer 在核心 fences 之前被调用：闭合围栏产出 manuscript token（渲染为
-// 衬线文稿块 + 字数标）；未闭合（流式进行中）产出同样 type 但 closed=false
-// 的 token，渲染为纯文本段落回退——旧渲染器对未闭合围栏的既有行为。
+// 衬线文稿块 + 字数标）；流式未闭合时使用同一结构，避免结束时重排。
 
 const PROSE_FENCE_RE = /^```(稿|prose)[ \t]*(?:\r?\n)/;
 const FENCE_CLOSE_RE = /^```[ \t]*(?:\r?$)/;
@@ -144,18 +143,42 @@ function manuscriptFenceToken(src) {
 }
 
 function manuscriptFenceRender(token) {
-  if (!token.closed) {
-    // 流式未闭合：按纯文本段落回退（延续旧渲染器行为），内容转义。
-    const lines = token.body.split("\n").filter((line) => line.trim());
-    return `<p>${lines.map(escapeHtml).join("<br>")}</p>`;
-  }
   const paras = token.body
     .split(/\n{2,}/u)
     .map((p) => p.trim())
     .filter(Boolean)
     .map((p) => `<p>${escapeHtml(p).replace(/\n/g, "<br>")}</p>`)
     .join("");
-  return `<div class="manuscript-block">${paras}<span class="manuscript-words">${countProseWords(token.body)} 字</span></div>`;
+  return `<div class="manuscript-block">${paras}<span class="manuscript-words"${token.closed ? "" : " hidden"}>${countProseWords(token.body)} 字</span></div>`;
+}
+
+// 保留未改变的节点；增长中的文本只追加尾部，已读段落与选区不被整段替换。
+export function updateMarkdown(container, source, doc = globalThis.document) {
+  const html = renderMarkdown(source);
+  const template = doc.createElement("template");
+  if (!template.content) { container.innerHTML = html; return; }
+  template.innerHTML = html;
+  function reconcile(target, next) {
+    const children = [...next.childNodes];
+    for (let i = 0; i < children.length; i += 1) {
+      const incoming = children[i];
+      const current = target.childNodes[i];
+      if (!current) { target.append(incoming); continue; }
+      if (current.isEqualNode(incoming)) continue;
+      if (current.nodeType !== incoming.nodeType || current.nodeName !== incoming.nodeName) {
+        current.replaceWith(incoming);
+      } else if (current.nodeType === 3) {
+        if (incoming.data.startsWith(current.data)) current.appendData(incoming.data.slice(current.data.length));
+        else current.data = incoming.data;
+      } else if (current.nodeType === 1) {
+        for (const attr of [...current.attributes]) if (!incoming.hasAttribute(attr.name)) current.removeAttribute(attr.name);
+        for (const attr of incoming.attributes) if (current.getAttribute(attr.name) !== attr.value) current.setAttribute(attr.name, attr.value);
+        reconcile(current, incoming);
+      } else current.replaceWith(incoming);
+    }
+    while (target.childNodes.length > children.length) target.lastChild.remove();
+  }
+  reconcile(container, template.content);
 }
 
 export function renderMarkdown(source, { refs = null } = {}) {

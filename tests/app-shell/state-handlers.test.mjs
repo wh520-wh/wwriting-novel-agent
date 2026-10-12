@@ -13,6 +13,7 @@ import { EVENT_HANDLERS, CONNECTION_ERROR_CODES } from "../../src/app-shell/agen
 // 共享同一 handler 函数，但表键按事件类型逐个登记。
 const KNOWN_EVENT_TYPES = [
   "session_created",
+  "message_imported",
   "input_queued",
   "input_started",
   "input_completed",

@@ -225,7 +225,7 @@ export function reduceEvent(state, event) {
 // 第十二轮 F1：Run 终态/waiting_user 时把未定稿的流式正文收敛为正式消息
 // （interrupted 标记，区别于 assistant_message_completed 的正常定稿）。
 // 只在事件路径调用；重建重放同一算法，确定性一致。
-function finalizeAssistantStream(state, seq) {
+function finalizeAssistantStream(state, seq, eventId) {
   const stream = state.assistantStream;
   // null-seq 退化事件不定稿：event_key 会退化为 `finalize:null`，去重失效，
   // 每次重建都重复插入气泡；正常路径（实录日志/恢复重放）seq 恒有值。
@@ -239,6 +239,7 @@ function finalizeAssistantStream(state, seq) {
     // event_key 去重（view.js:631），null-key 消息会在每次 messages 重建
     // （rebuildDerivedState / 任何 messages revision 变化）时重复插入气泡。
     event_key: `finalize:${seq}`,
+    event_id: eventId,
     truncated: false,
     interrupted: true
   });
@@ -268,7 +269,8 @@ function markRunNarration(state) {
   }
   let marked = false;
   for (let i = start; i < state.conversation.length; i += 1) {
-    if (state.conversation[i].role === "assistant" && i !== lastAssistant) {
+    if (state.conversation[i].role === "assistant" && i !== lastAssistant
+        && !/^```(?:稿|prose)[ \t]*\r?$/mu.test(state.conversation[i].text)) {
       state.conversation[i].narration = true;
       marked = true;
     }
@@ -289,6 +291,13 @@ function markRunNarration(state) {
 // --- 会话元数据 ---
 function handleSessionCreated(state, payload, event) {
   state.sessionId = event.session_id ?? state.sessionId;
+}
+
+function handleMessageImported(state, payload, event, seq, key) {
+  if (!["user", "assistant"].includes(payload.role) || typeof payload.text !== "string" || !payload.text) return;
+  state.conversation.push({ role: payload.role, text: payload.text, input_id: null, seq, event_key: key, event_id: event.event_id,
+    truncated: payload.truncated === true, interrupted: payload.interrupted === true });
+  bump(state, ["messages"]);
 }
 
 // --- 输入生命周期：队列与活动输入 ---
@@ -408,6 +417,7 @@ function handleAssistantMessageCompleted(state, payload, event, seq, key) {
       seq,
       event_key: key,
       // Task 4：completed 携带 truncated 标记（核心按 finish_reason=length 判定），
+      event_id: event.event_id,
       // 投影到消息记录供 view 渲染截断提示；缺省视为完整输出。
       truncated: payload.truncated === true
     });
@@ -454,7 +464,7 @@ function handleRunStarted(state, payload, event, seq) {
   state.errors = [];
   // 新 Run（或重试恢复）从零累积正文增量：先定稿上一轮残留的流式正文
   // （retry 不再静默删除半截输出）。
-  finalizeAssistantStream(state, seq);
+  finalizeAssistantStream(state, seq, event.event_id);
   bump(state, ["run", "queue", "decisions", "errors"]);
 }
 
@@ -469,7 +479,7 @@ function handleRunStatusChanged(state, payload, event, seq) {
   // targetTerminal 分支允许 run_status_changed 携带终态 status，历史日志/
   // 恢复重放若走此路径同样收敛，不违反「终态无残留流式」不变量）。
   if (run.status === "waiting_user" || TERMINAL_RUN_STATUSES.has(run.status)) {
-    finalizeAssistantStream(state, seq);
+    finalizeAssistantStream(state, seq, event.event_id);
   }
   // N2 对称：run_status_changed 终态兜底路径也标 narration（与 F1 定稿对称；
   // waiting_user 非终态必须跳过——不要在这里对 waiting_user 调
@@ -563,7 +573,7 @@ function handleRunFailed(state, payload, event, seq) {
     code: payload.code ?? "model_error"
   });
   // F1：失败也是终态——先把流式正文定稿为 interrupted 气泡，再清空流槽。
-  finalizeAssistantStream(state, seq);
+  finalizeAssistantStream(state, seq, event.event_id);
   // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
   markRunNarration(state);
   const run = state.session?.active_run;
@@ -593,7 +603,7 @@ function handleConnectionError(state, payload, event, seq) {
 
 function handleRunCompleted(state, payload, event, seq) {
   // F1：终态定稿——即使没收到 assistant_message_completed，流式正文也不残留。
-  finalizeAssistantStream(state, seq);
+  finalizeAssistantStream(state, seq, event.event_id);
   // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
   markRunNarration(state);
   const run = state.session?.active_run;
@@ -607,7 +617,7 @@ function handleRunCompleted(state, payload, event, seq) {
 
 function handleRunCancelled(state, payload, event, seq) {
   // F1：取消同样定稿残留正文（interrupted 标记，非静默删除）。
-  finalizeAssistantStream(state, seq);
+  finalizeAssistantStream(state, seq, event.event_id);
   // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
   markRunNarration(state);
   const run = state.session?.active_run;
@@ -621,7 +631,7 @@ function handleRunCancelled(state, payload, event, seq) {
 
 function handleRunInterrupted(state, payload, event, seq) {
   // F1：中断即终态——把半截正文定稿为 interrupted 气泡。
-  finalizeAssistantStream(state, seq);
+  finalizeAssistantStream(state, seq, event.event_id);
   // 第十二轮 N2：终态标记本 Run 内非最终 assistant 消息为 narration。
   markRunNarration(state);
   const run = state.session?.active_run;
@@ -769,6 +779,7 @@ function handleSystemNotice(state, payload, event, seq) {
 // 对账：键数与 known 事件类型全集相等）。
 export const EVENT_HANDLERS = {
   session_created: handleSessionCreated,
+  message_imported: handleMessageImported,
   input_queued: handleInputQueued,
   input_started: handleInputStarted,
   input_completed: handleInputTerminal,

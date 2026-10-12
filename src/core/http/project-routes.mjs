@@ -166,11 +166,11 @@ export function createProjectRoutes({
         //（YOLO 等权限档在重开后按 workspace settings 持久显示）。
         workspaceStore
       });
-      if (data?.hasProject) {
+      if (data?.projectRoot || data?.hasProject) {
         // 任务 6：迁移后 active_model 可为 null（mock 归零/未配置模型）。buildModelProfile
         // 的缺省参数只覆盖 undefined；归一化 null → {} 进入未配置分支，展示「未配置」——
         // 用户面不再出现 mock 兜底。
-        data.model_profile = buildModelProfile(data.project?.active_model ?? {}, secretsRoot);
+        data.model_profile = buildModelProfile(data.config?.effective?.active_model ?? data.project?.active_model ?? {}, secretsRoot);
       }
       return data;
     },

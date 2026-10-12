@@ -54,7 +54,7 @@ export async function updateProjectSettings(projectRoot, patch = {}) {
 // config-runtime.loadEffectiveWorkspaceConfig），再把模型与权限成对写入
 // workspaceStore.saveSettings——绝不写回 project.yaml（旧文件保留为回滚依据，旧项目
 // 首次打开即完成只读导入，之后不双写）。任何一次写入都同时携带 active_model 与
-// tool_permissions，避免 store 归一化（4 布尔白名单）把另一侧字段重置成安全默认。
+// tool_permissions，并保留思考强度，避免保存一侧时清掉其他已保存选项。
 export async function saveWorkspaceSettings(projectRoot, {
   workspaceStore = null,
   activeModel = null,
@@ -67,6 +67,7 @@ export async function saveWorkspaceSettings(projectRoot, {
   const before = effectiveConfig ?? await loadEffectiveWorkspaceConfig(projectRoot, { workspaceStore });
   return workspaceStore.saveSettings(projectRoot, {
     active_model: activeModel ?? before.active_model,
+    reasoning_effort: before.reasoning_effort,
     tool_permissions: toolPermissions ?? before.tool_permissions
   });
 }

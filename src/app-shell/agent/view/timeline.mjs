@@ -15,7 +15,8 @@
 // F17 修复（第十五轮唯一行为例外）：节点从时间线移除统一走 removeNode——
 // 先 timelineSeqs.delete(node) 再 node.remove()，杜绝 seq 索引陈旧条目泄漏
 //（syncNotices 重渲染通知行等移除路径原来只 remove 不 delete）。
-import { renderMarkdown } from "../../markdown-lite.mjs";
+import { renderMarkdown, updateMarkdown } from "../../markdown-lite.mjs";
+import { icon } from "../../icons.js";
 import { getCompactionRows } from "../state.js";
 
 // Task 11 Step 4：压缩状态行固定文案映射（同一位置单行顶替；完成/失败/取消后
@@ -57,6 +58,11 @@ export function createTimelineView(ctx) {
   let streamBubble = null;         // 流式 assistant 气泡（delta 期间的临时节点）
   let streamRenderPending = false; // 已有未决帧渲染
   let renderedStreamText = null;   // 最近已渲染的累积文本
+  let streamStartSeq = null;
+  const messageEntries = new WeakMap();
+  const deferredText = new Map();
+  const feedbackTimers = new Set();
+  const viewIcon = ctx.viewIcon ?? ((name, size) => typeof doc.createElementNS === "function" ? icon(name, size, null, doc) : doc.createTextNode(name === "copy" ? "⧉" : "↗"));
   let loadingEarlier = false;      // 与 index.js 双保险的防重复标记
   let earlierAnchor = null;        // { oldHeight, oldTop }：前置插入前记录
   let historyGapErrorNode = null;  // 加载失败的一次性可重试提示
@@ -72,6 +78,7 @@ export function createTimelineView(ctx) {
   // clear 边界（整体清空语境，不走本函数）。
   function removeNode(node) {
     if (node == null) return;
+    deferredText.delete(node);
     timelineSeqs.delete(node);
     if (node.dataset?.eventKey != null) messageNodes.delete(node.dataset.eventKey);
     node.remove();
@@ -95,7 +102,96 @@ export function createTimelineView(ctx) {
   }
 
   function afterRender() {
-    if (ctx.followLatest) scrollToBottom();
+    if (ctx.followLatest && !hasSelection(conv)) scrollToBottom();
+  }
+
+  function hasSelection(container) {
+    const selection = doc.getSelection?.();
+    return selection && !selection.isCollapsed && ((selection.rangeCount && selection.getRangeAt(0).intersectsNode(container))
+      || container.contains?.(selection.anchorNode) || container.contains?.(selection.focusNode));
+  }
+
+  function updateMessageText(bubble, value) {
+    const text = bubble.querySelector(".agent-message-text");
+    if (hasSelection(text)) { deferredText.set(bubble, value); return; }
+    deferredText.delete(bubble);
+    text.querySelector(".agent-stream-caret")?.remove();
+    updateMarkdown(text, value, doc);
+    if (bubble.dataset.streaming === "true") {
+      const caret = doc.createElement("span");
+      caret.className = "agent-stream-caret";
+      caret.setAttribute("aria-hidden", "true");
+      const last = text.lastElementChild;
+      const tail = last?.classList.contains("manuscript-block") ? last.querySelector("p:last-of-type") : last;
+      (/^(P|LI|H[1-6])$/iu.test(tail?.tagName ?? "") ? tail : text).append(caret);
+    }
+  }
+
+  function resumeSelectedMessage() {
+    for (const [bubble, value] of deferredText) if (!hasSelection(bubble)) updateMessageText(bubble, value);
+    if (ctx.currentState?.assistantStream) scheduleStreamRender();
+  }
+  doc.addEventListener?.("selectionchange", resumeSelectedMessage);
+
+  function addMessageActions(bubble) {
+    const bar = doc.createElement("div");
+    bar.className = "agent-message-actions";
+    for (const [name, label] of [["copy", "复制内容"], ["branch", "分支到新聊天"]]) {
+      const button = doc.createElement("button");
+      button.type = "button";
+      button.className = "agent-message-action";
+      button.dataset.testid = `agent-message-${name}`;
+      button.title = label;
+      button.setAttribute("aria-label", label);
+      button.append(viewIcon(name, 17));
+      button.addEventListener("click", async () => {
+        if (button.disabled) return;
+        const entry = messageEntries.get(bubble);
+        const generation = ctx.viewGeneration;
+        button.disabled = true;
+        try {
+          if (name === "copy") {
+            await globalThis.navigator.clipboard.writeText(entry.text);
+            if (generation !== ctx.viewGeneration) return;
+            button.replaceChildren(viewIcon("check", 17));
+            button.setAttribute("aria-label", "已复制");
+            button.title = "已复制";
+            const timer = setTimeout(() => {
+              feedbackTimers.delete(timer);
+              if (generation !== ctx.viewGeneration) return;
+              button.replaceChildren(viewIcon(name, 17));
+              button.setAttribute("aria-label", label);
+              button.title = label;
+            }, 1600);
+            feedbackTimers.add(timer);
+          } else await ctx.actions.forkMessage(entry);
+        } catch (error) {
+          if (generation === ctx.viewGeneration) showToast(name === "copy" ? "复制失败" : error?.message ?? "创建分支失败，请重试");
+        } finally {
+          if (generation === ctx.viewGeneration) button.disabled = false;
+        }
+      });
+      bar.append(button);
+    }
+    bubble.append(bar);
+  }
+
+  function updateMessage(bubble, entry) {
+    messageEntries.set(bubble, entry);
+    bubble.classList.toggle("agent-message--narration", entry.narration === true);
+    updateMessageText(bubble, entry.text);
+    const branch = bubble.querySelector('[data-testid="agent-message-branch"]');
+    if (branch) branch.disabled = !entry.event_id;
+    for (const [key, label] of [["truncated", "ⓘ 输出被截断"], ["interrupted", "ⓘ 已中断"]]) {
+      const existing = bubble.querySelector(`[data-testid="${key === "truncated" ? "truncation" : key}-mark"]`);
+      if (entry[key] && !existing) {
+        const mark = doc.createElement("div");
+        mark.className = "agent-message-truncation";
+        mark.dataset.testid = `${key === "truncated" ? "truncation" : key}-mark`;
+        mark.textContent = label;
+        bubble.append(mark);
+      }
+    }
   }
 
   function maybeLoadEarlier() {
@@ -162,6 +258,10 @@ export function createTimelineView(ctx) {
       text.textContent = String(textValue ?? "");
     }
     bubble.append(text);
+    if (role === "assistant") {
+      messageEntries.set(bubble, { role, text: String(textValue ?? "") });
+      addMessageActions(bubble);
+    }
     if (narration) bubble.classList.add("agent-message--narration");
     if (truncated) {
       // Task 4：max_tokens 截断提示。独立元素追加在文本区域之后，不修改正文本身。
@@ -259,8 +359,12 @@ export function createTimelineView(ctx) {
     // B1 修复：若新 seq 节点排到有 seq 区的末尾（index === lastSeqIndex+1），其
     // 后还有无 seq 节点（pending 用户气泡 = 用户刚发的消息），则追加到末尾——
     // 工作组不得压到 pending 用户气泡上方（工作组必须跟在 pending 气泡之后）。
-    if (index === lastSeqIndex + 1 && lastSeqIndex < children.length - 1) {
+    if (index === lastSeqIndex + 1 && lastSeqIndex < children.length - 1 && children[index] !== node) {
       index = children.length; // append：落在无 seq 尾区之后
+    }
+    if (children[index] === node) {
+      timelineSeqs.set(node, seq);
+      return;
     }
     if (index >= children.length) {
       messages.append(node);
@@ -288,12 +392,17 @@ export function createTimelineView(ctx) {
         reconcilePendingSubmission(entry);
         insertTimeline(createMessageBubble("user", entry.text), entry.seq, eventKey);
       } else if (typeof entry.text === "string" && entry.text.length > 0) {
-        // 助手正文走 Markdown 渲染（与流式气泡同一口径，增量/终态一致）。
-        insertTimeline(
-          createMessageBubble("assistant", entry.text, { markdown: true, truncated: entry.truncated === true, interrupted: entry.interrupted === true, narration: entry.narration === true }),
-          entry.seq,
-          eventKey
-        );
+        const bubble = streamBubble && entry.seq >= streamStartSeq
+          ? streamBubble : createMessageBubble("assistant", "", { markdown: true });
+        if (bubble === streamBubble) {
+          delete bubble.dataset.streaming;
+          bubble.querySelector(".agent-stream-caret")?.remove();
+          streamBubble = null;
+          streamStartSeq = null;
+          renderedStreamText = null;
+        }
+        updateMessage(bubble, entry);
+        insertTimeline(bubble, entry.seq, eventKey);
       }
     }
     rendered.messages = state.revisions.messages;
@@ -319,21 +428,13 @@ export function createTimelineView(ctx) {
       return;
     }
     if (!streamBubble) {
-      streamBubble = createMessageBubble("assistant", text, { markdown: true });
+      streamBubble = createMessageBubble("assistant", "", { markdown: true });
+      streamBubble.classList.add("agent-message--streamed");
       streamBubble.dataset.streaming = "true";
+      streamStartSeq = ctx.currentState?.lastSeq ?? 0;
       messages.append(streamBubble);
     }
-    const textEl = streamBubble.querySelector(".agent-message-text");
-    if (textEl) {
-      textEl.innerHTML = renderMarkdown(text);
-      // AICSS streaming-text：流式实心光标（8px×1.05em，见 agent.css）。定稿
-      // （assistant_message_completed）后流式气泡被 syncStream 移除，光标随之
-      // 消失——无闪烁态：WWriting 没有"播完未折叠"的中间态（有意为之）。
-      const caret = doc.createElement("span");
-      caret.className = "agent-stream-caret";
-      caret.setAttribute("aria-hidden", "true");
-      textEl.append(caret);
-    }
+    updateMessage(streamBubble, { role: "assistant", text });
     renderedStreamText = text;
     afterRender();
   }
@@ -344,6 +445,7 @@ export function createTimelineView(ctx) {
       // 终态/切换：立即移除流式气泡并取消未决帧（帧回调即使执行也只是空转）。
       if (streamBubble) removeNode(streamBubble);
       streamBubble = null;
+      streamStartSeq = null;
       streamRenderPending = false;
       renderedStreamText = null;
       return;
@@ -495,6 +597,9 @@ export function createTimelineView(ctx) {
 
   // reset：时间线分区自己的清理（整体清空语境，seq 索引随 map clear 归零，无泄漏）。
   function reset() {
+    deferredText.clear();
+    for (const timer of feedbackTimers) clearTimeout(timer);
+    feedbackTimers.clear();
     // 工作组已插入 messages 统一时间线：整体清空 messages 与 seq/key 映射。
     messages.replaceChildren();
     timelineSeqs.clear();
@@ -502,6 +607,7 @@ export function createTimelineView(ctx) {
     if (streamBubble) { streamBubble.remove(); streamBubble = null; }
     streamRenderPending = false;
     renderedStreamText = null;
+    streamStartSeq = null;
     for (const record of compactionRowNodes.values()) {
       record.wrap.remove();
       if (record.eventKey != null) messageNodes.delete(record.eventKey);
@@ -516,6 +622,10 @@ export function createTimelineView(ctx) {
   }
 
   function destroy() {
+    doc.removeEventListener?.("selectionchange", resumeSelectedMessage);
+    deferredText.clear();
+    for (const timer of feedbackTimers) clearTimeout(timer);
+    feedbackTimers.clear();
     timelineSeqs.clear();
     messageNodes.clear();
   }

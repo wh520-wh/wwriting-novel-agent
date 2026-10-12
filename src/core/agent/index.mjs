@@ -27,6 +27,7 @@
 //   // Task 4：多会话管理（sessionId 缺省 = 最近活跃；品牌新项目 = 空/惰性创建）
 //   await agent.sessions({ projectRoot });       // -> { sessions: SessionMeta[], active_session_id }
 //   await agent.newSession({ projectRoot, title });           // -> SessionMeta
+//   await agent.forkSession({ projectRoot, sessionId, throughSeq, eventId }); // -> SessionMeta
 //   await agent.renameSession({ projectRoot, sessionId, title });
 //   await agent.archiveSession({ projectRoot, sessionId });
 //   await agent.restoreSession({ projectRoot, sessionId });
@@ -63,6 +64,7 @@ export function createProjectAgent(dependencies = {}) {
     clearHistory: (params) => runtime.clearHistory(params),
     sessions: (params) => runtime.sessions(params),
     newSession: (params) => runtime.newSession(params),
+    forkSession: (params) => runtime.forkSession(params),
     renameSession: (params) => runtime.renameSession(params),
     archiveSession: (params) => runtime.archiveSession(params),
     restoreSession: (params) => runtime.restoreSession(params),

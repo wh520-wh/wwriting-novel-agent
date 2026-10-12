@@ -2,7 +2,7 @@
 //
 // 覆盖（brief Step 1 逐条）：
 //   - 自然断点为换行或 。！？.!?；;
-//   - 当前片段至少停留 dwellMs（默认 800ms）
+//   - 当前片段至少停留 dwellMs（默认 1800ms）
 //   - 积压时只保留最新完整片段
 //   - finish 立即停止 timer 并返回未展示的文本
 //   - 未完成尾段与后续增量拼接成完整片段；reset 清空状态；dwellMs 可配置。
@@ -46,7 +46,7 @@ test("自然断点：换行与中英文标点都切分完整语义片段", () =>
   const ticker = createReasoningTicker({ onDisplay: (t) => displays.push(t), scheduler: clock });
   for (const chunk of ["先检查\n", "再核对。", "是否准确？", "OK!", "无误.", "然后?", "分号；", "末尾;", "再验证。"]) {
     ticker.push(chunk);
-    clock.advance(800);
+    clock.advance(1800);
   }
   assert.deepEqual(
     displays,
@@ -56,7 +56,7 @@ test("自然断点：换行与中英文标点都切分完整语义片段", () =>
   ticker.finish();
 });
 
-test("当前片段至少停留 dwellMs（默认 800ms），首片段立即显示", () => {
+test("当前片段至少停留 dwellMs（默认 1800ms），首片段立即显示", () => {
   const displays = [];
   const clock = createFakeClock();
   const ticker = createReasoningTicker({ onDisplay: (t) => displays.push(t), scheduler: clock });
@@ -64,10 +64,10 @@ test("当前片段至少停留 dwellMs（默认 800ms），首片段立即显示
   assert.deepEqual(displays, ["第一。"], "首个完整片段立即显示，不等 dwellMs");
   ticker.push("第二。");
   assert.deepEqual(displays, ["第一。"], "停留期间到达的新片段不打断当前显示");
-  clock.advance(400);
-  assert.deepEqual(displays, ["第一。"], "不足 800ms 仍不切换");
-  clock.advance(400);
-  assert.deepEqual(displays, ["第一。", "第二。"], "满 800ms 后切换");
+  clock.advance(900);
+  assert.deepEqual(displays, ["第一。"], "不足 1800ms 仍不切换");
+  clock.advance(900);
+  assert.deepEqual(displays, ["第一。", "第二。"], "满 1800ms 后切换");
   ticker.finish();
 });
 
@@ -78,7 +78,7 @@ test("积压时只保留最新完整片段", () => {
   // 单次 burst 含三个完整片段：只保留最新一个，中间片段直接丢弃
   ticker.push("甲。乙。丙。");
   assert.deepEqual(displays, ["丙。"], "burst 只显示最新完整片段");
-  clock.advance(800);
+  clock.advance(1800);
   assert.deepEqual(displays, ["丙。"], "积压已清空，不重复显示");
   // 分次到达：先显示 甲。，积压只保留最新 丙。
   ticker.push("甲。");
@@ -86,7 +86,7 @@ test("积压时只保留最新完整片段", () => {
   ticker.push("乙。");
   ticker.push("丙。");
   assert.deepEqual(displays, ["丙。", "甲。"], "计时期间只更新积压的最新片段");
-  clock.advance(800);
+  clock.advance(1800);
   assert.deepEqual(displays, ["丙。", "甲。", "丙。"], "dwell 结束后显示积压的最新片段");
   ticker.finish();
 });
@@ -148,9 +148,9 @@ test("reset 清空计时与状态", () => {
   assert.deepEqual(displays, ["甲。"], "reset 丢弃遗留 carry，不拼出「遗留甲。」");
   ticker.push("乙。");
   assert.deepEqual(displays, ["甲。"], "重置后的新片段同样遵守 dwell");
-  clock.advance(800);
+  clock.advance(1800);
   assert.deepEqual(displays, ["甲。", "乙。"], "dwell 结束后显示新片段");
-  clock.advance(800);
+  clock.advance(1800);
   assert.deepEqual(displays, ["甲。", "乙。"], "reset 前遗留的计时不触发");
   ticker.finish();
 });

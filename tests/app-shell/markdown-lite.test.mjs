@@ -124,11 +124,12 @@ test("稿块：衬线容器 + 字数标（稿 与 prose 别名等价）", () => 
   assert.equal(renderMarkdown("```prose\n夜雨敲窗。\n\n他点了灯。\n```"), expected);
 });
 
-test("流式未闭合稿围栏按纯文本段落回退，不抛错（延续旧渲染器行为）", () => {
+test("流式文稿使用定稿排版，字数只在围栏闭合后显示", () => {
   const html = renderMarkdown("```稿\n只有开头");
-  assert.ok(html.startsWith("<p>"), html);
+  assert.ok(html.startsWith('<div class="manuscript-block">'), html);
   assert.ok(html.includes("只有开头"));
-  assert.ok(!html.includes("manuscript-block"));
+  assert.ok(html.includes('class="manuscript-words" hidden'));
+  assert.equal(html.replace(" hidden", ""), renderMarkdown("```稿\n只有开头\n```"));
 });
 
 test("稿块围栏兼容 CRLF 行尾与闭合围栏尾随空格", () => {
@@ -136,11 +137,11 @@ test("稿块围栏兼容 CRLF 行尾与闭合围栏尾随空格", () => {
   assert.ok(html.includes("manuscript-block"), html);
   assert.ok(html.includes("正文段。"), html);
   assert.ok(!html.includes("```"), "围栏不得泄漏到渲染结果");
-  // CRLF 下的流式未闭合（打开围栏后无闭合行）同样按纯文本回退。
+  // CRLF 流式同样保持文稿结构。
   const stream = renderMarkdown("```prose\r\n只有开头");
-  assert.ok(stream.startsWith("<p>"), stream);
+  assert.ok(stream.startsWith('<div class="manuscript-block">'), stream);
   assert.ok(stream.includes("只有开头"));
-  assert.ok(!stream.includes("manuscript-block"));
+  assert.ok(stream.includes('class="manuscript-words" hidden'));
 });
 
 test("混合文档整体顺序正确：说明 → 稿块 → 列表", () => {

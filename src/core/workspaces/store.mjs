@@ -45,6 +45,8 @@ function normalizeWorkspaceSettings(value) {
     active_model: value?.active_model && typeof value.active_model === "object"
       ? structuredClone(value.active_model)
       : null,
+    ...(["auto", "low", "medium", "high"].includes(value?.reasoning_effort)
+      ? { reasoning_effort: value.reasoning_effort } : {}),
     tool_permissions: {
       read_only: permissions.read_only === true,
       auto_edit: permissions.auto_edit === true,

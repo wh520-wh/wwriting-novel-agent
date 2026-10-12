@@ -14,6 +14,7 @@
 //   POST /api/agent/history/clear           clearHistory({ confirm_irreversible })
 //   GET  /api/agent/sessions?projectRoot     sessions()
 //   POST /api/agent/sessions                 createSession(title?)
+//   POST /api/agent/sessions/:sessionId/fork  forkSession(sessionId, throughSeq, eventId)
 //   PATCH /api/agent/sessions/:sessionId     renameSession/archiveSession/restoreSession
 //   DELETE /api/agent/sessions/:sessionId?projectRoot  deleteSession(sessionId)
 //   GET  /api/project/events?afterSeq        connectEvents()（SSE 轮询流，断线指数退避重连）
@@ -220,6 +221,10 @@ export function createAgentApi({
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ projectRoot: root(), ...fields })
     });
+  }
+
+  function forkSession(sessionId, throughSeq, eventId) {
+    return postJson(`/api/agent/sessions/${encodeURIComponent(sessionId)}/fork`, { projectRoot: root(), throughSeq, eventId });
   }
 
   function renameSession(sessionId, title) {
@@ -468,6 +473,7 @@ export function createAgentApi({
     connectEvents,
     sessions,
     createSession,
+    forkSession,
     renameSession,
     archiveSession,
     restoreSession,

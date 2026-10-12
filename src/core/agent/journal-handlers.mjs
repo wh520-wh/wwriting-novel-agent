@@ -12,15 +12,9 @@
 //   （session_created）由 reduceEvent 的引导逻辑创建，其余 handler 无返回值。
 import { fail } from "./agent-utils.mjs";
 
-// 计划固定的 44 个 journal 事件类型；未知类型一律拒绝。
-// Task 6：新输入生命周期只产生六类事件（input_queued/input_started/input_completed/
-// input_interrupted/input_withdrawn/priority_input_requested）；旧的 input_promoted/
-// input_consumed/input_cancelled 已由新 generation 停止产生（Task 26 收口），类型
-// 清单与 reducer legacy 分支只服务旧日志追加式重放（reducer 契约外事件，回放旧
-// journal 仍可接受）。Task 12：旧工作流事件类型已随工作流概念整体删除（不再产生、
-// 不再投影、reducer 拒绝）。
 export const FIXED_EVENT_TYPES = Object.freeze([
   "session_created",
+  "message_imported",
   "run_started",
   "run_status_changed",
   "input_queued",
@@ -242,6 +236,15 @@ export const EVENT_HANDLERS = Object.freeze({
 
   session_created(session, event) {
     if (session.last_seq !== 0) fail("session_created 必须是 journal 的第一条事件");
+  },
+
+  message_imported(session, event) {
+    const p = event.payload;
+    if (session.active_run || event.run_id != null) fail("仅新会话可导入消息");
+    if (!["user", "assistant"].includes(p.role)) fail("导入消息角色无效");
+    requireString(p.text, "text");
+    requireString(p.source_session_id, "source_session_id");
+    requireString(p.source_event_id, "source_event_id");
   },
 
   // --- Run 生命周期：启动与状态迁移 ---

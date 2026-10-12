@@ -15,6 +15,18 @@ function runToCancelled() {
   return state;
 }
 
+test("文稿不会因后续保存说明被淡化，普通过程叙述仍淡化", () => {
+  const state = createState();
+  reduceEvent(state, ev("run_started", {}, 1));
+  reduceEvent(state, ev("assistant_message_completed", { text: "先读取设定。" }, 2));
+  reduceEvent(state, ev("assistant_message_completed", { text: "```稿\n雨落在窗沿。\n```" }, 3));
+  reduceEvent(state, ev("assistant_message_completed", { text: "正文已写入。" }, 4));
+  reduceEvent(state, ev("run_completed", {}, 5));
+  assert.equal(state.conversation[0].narration, true);
+  assert.notEqual(state.conversation[1].narration, true);
+  assert.notEqual(state.conversation[2].narration, true);
+});
+
 test("F1: run_cancelled 把未定稿正文定稿为带 interrupted 标记的气泡", () => {
   const state = runToCancelled();
   assert.equal(state.assistantStream, null, "流式槽必须清空");

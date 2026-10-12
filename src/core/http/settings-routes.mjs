@@ -111,18 +111,18 @@ export function createSettingsRoutes({
           throw new HttpError(400, "invalid_settings_patch", "settings update requires a patch.");
         }
 
-        // 任务 5 Step 5：权限保存写应用私有 workspace settings（成对携带模型，
-        // 旧 project.yaml 只读保留为回滚依据）。
-        if (normalizedNonModelPatch?.tool_permissions) {
+        // 权限与思考强度写应用私有设置，同时保留模型和未改动的选项。
+        if (normalizedNonModelPatch.tool_permissions || normalizedNonModelPatch.reasoning_effort !== undefined) {
           await saveWorkspaceSettings(projectRoot, {
             workspaceStore,
             toolPermissions: { ...before.tool_permissions, ...normalizedNonModelPatch.tool_permissions },
-            effectiveConfig: before
+            effectiveConfig: { ...before, reasoning_effort: normalizedNonModelPatch.reasoning_effort ?? before.reasoning_effort }
           });
         }
-        // 其余非模型、非权限字段仍走旧 project.yaml 路径（旧项目兼容）。
+        // 其余作品字段走旧 project.yaml 路径（结构化作品兼容）。
         const legacyPatch = { ...(normalizedNonModelPatch ?? {}) };
         delete legacyPatch.tool_permissions;
+        delete legacyPatch.reasoning_effort;
         if (Object.keys(legacyPatch).length > 0) {
           await updateProjectSettings(projectRoot, legacyPatch);
         }

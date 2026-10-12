@@ -199,7 +199,10 @@ export function createAgentSurface({
   function applySnapshot(snapshot) {
     if (!snapshot || typeof snapshot !== "object") return;
     const rebuild = reduceSnapshot(state, snapshot);
-    if (rebuild) view.reset();
+    if (rebuild) {
+      view.reset();
+      pushComposerOptions();
+    }
     view.render(state, actions);
     // 第九轮：快照回放可能包含 plan_updated 事件，通知 plan-panel 同步。
     // 第十一轮（审计 B）：无 plan 也是状态--null 必须同样通知，否则切到无 plan
@@ -635,6 +638,13 @@ export function createAgentSurface({
 
   const actions = {
     submit,
+    forkMessage: async (entry) => {
+      const scope = currentProjectScope();
+      const result = await ensureApi().forkSession(state.sessionId, entry.seq, entry.event_id);
+      if (!isCurrentProjectScope(scope)) return;
+      await switchSession(result.session.session_id);
+      await refreshSessions();
+    },
     // 前置分页（Task 10 Step 4）：view 滚动到顶（≤240px）且有更早历史时调用。
     // 插入前记录 oldHeight/oldTop，插入后按差恢复 scrollTop 保持锚点；失败只
     // 显示一次可重试提示且不清空当前消息。

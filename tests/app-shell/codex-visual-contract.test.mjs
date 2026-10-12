@@ -3,8 +3,8 @@
 // 冻结基线（与 docs/superpowers/plans/2026-08-09-codex-style-ui-redesign.md 对应）：
 //   - agent.css 无 raw hex（颜色一律 var(--token)）；hex 只允许在 styles.css
 //     :root 与 [data-theme="dark"] 两个 primitive 块；
-//   - 对话与 composer 共享 --content-column: 1040px；
-//   - Task 2+：运行区无横杠、工作项无左侧竖线、--r-lg: 12px（round17 §3.4 并档）；
+//   - 消息和状态保留 --content-column: 1040px，滚动区与 composer 全宽；
+//   - 运行区无横杠、工作项无左侧竖线；圆角遵循统一书 §7 的三档层级；
 //   - Task 3+：工作组无框直出；Task 4+：状态小条与压缩条；
 //   - Task 5+：composer 卡片化、顶栏发丝下边框、项目行圆角。
 import assert from "node:assert/strict";
@@ -54,8 +54,8 @@ test("Codex 基线：运行区无横杠、工作项无左侧竖线", () => {
   assert.ok(!/\.agent-work-item::before/u.test(css), "工作项左侧竖线必须移除");
 });
 
-test("Codex 基线：styles.css 提供 --r-lg 12px", () => {
-  assert.match(read("src/app-shell/styles.css"), /--r-lg:\s*12px/u);
+test("圆角层级：styles.css 提供大表面 --r-lg 20px", () => {
+  assert.match(read("src/app-shell/styles.css"), /--r-lg:\s*20px/u);
 });
 
 test("Codex 基线：工作组无框直出", () => {
@@ -146,7 +146,7 @@ test("Round10 契约：Composer 稳定三行、send 固定 34px、历史损坏�
     );
   }
   // send 固定 34px（尺寸声明在第二个块；第一个块是通用 flex 基线）
-  assert.match(css, /\.agent-send\s*\{[^}]*\}\s*\.agent-send\s*\{[^}]*width:\s*34px[^}]*height:\s*34px[^}]*border-radius:\s*var\(--r-sm\)/u, "send 固定 34px");
+  assert.match(cssBlock(css, ".agent-send"), /width:\s*34px[^}]*height:\s*34px[^}]*border-radius:\s*var\(--r-sm\)/u, "send 固定 34px");
   // 历史损坏提示不再用 JS 内联样式
   assert.match(cssBlock(css, ".agent-history-clear-hint"), /font-size:\s*var\(--font-xs\)/u, "history 提示样式在 CSS");
   const view = read("src/app-shell/agent/view.js");
