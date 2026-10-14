@@ -1,16 +1,30 @@
 # 项目状态、验证与历史记录
 
-记录于：2026-10-12｜状态：当前有效｜依据：两端 `package.json`、下列分日期验证日志、AI 生成内容与聊天分支实现、组件圆角与表面优化；CLI 状态仍沿用 2026-10-08 验证。
+记录于：2026-10-14｜状态：当前有效｜依据：v0.5.5 桌面源码更新、本地打包与下列分日期验证日志；此前组件圆角与表面记录保留原基线，CLI 状态仍沿用 2026-10-08 验证。
 
 本文件是项目维护记忆，按“当前状态 → 已确认待办 → 最近变更 → 历史记录”阅读。它不代替[行为规格](../design/统一行为规格书.md)或[领域词汇](../../CONTEXT.md)。测试结果表示所列日期和范围的验证；未重跑的结果不能代表当前工作树全绿。
 
 ## 当前状态
 
-- 桌面版与 CLI 各自有运行入口、模型适配、会话存储和测试；根目录 `npm test` 不包含 CLI。版本与依赖以各自 `package.json` 为准：本次复核桌面版 `0.5.4` / Node ≥24，CLI `0.1.0` / Node ≥22；CLI 已有 `yaml` 运行时依赖。
+- 桌面版与 CLI 各自有运行入口、模型适配、会话存储和测试；根目录 `npm test` 不包含 CLI。版本与依赖以各自 `package.json` 为准：本次复核桌面版 `0.5.5` / Node ≥24，CLI `0.1.0` / Node ≥22；CLI 已有 `yaml` 运行时依赖。
 - CLI 已取消固定小历史窗口，接近模型窗口才自动压缩；完整行为见[统一书 §34](../design/统一行为规格书.md#34-cli-长篇上下文与自动压缩)。写作工作区的 `WWRITING.md` 是作品记忆，与本文件的工程记忆分开。
 
 | 入口 | 最近一次验证 | 结果 | 依据与边界 |
 |---|---|---|---|
+| 桌面全量 `npm test`，v0.5.5 本地更新前 | 2026-10-14 | 2096/2096，exit 0 | `.local/reading-update-full-tests.log`；包含本轮跟读、等待、选区/键盘、操作焦点、重复渲染、复制反馈和聊天切换回归；正常本机权限，不包含 CLI |
+| v0.5.5 Windows x64 安装器 / 本地可运行包更新 | 2026-10-14 | 构建、产物检查及启动冒烟 exit 0 | `npm run package:installer`、`npm run verify:installer`、`npm run verify:packaged-dir`、`.local/reading-update-artifact-check.cjs`；对应 `.local/reading-update-build-installer.log`、`.local/reading-update-installer-check.log`、`.local/reading-update-packaged-smoke.log` 与 `.local/reading-update-artifact-check.json`；包内版本与四个改动源码逐字节匹配，更新工作区 `dist-desktop/win-unpacked`，未发现已登记安装版或快捷方式，未执行安装器安装或上传 Release 附件 |
+| 聊天切换跟随 / 时间线 / 阅读跟随 / 定稿 / 架构定向检查 | 2026-10-14 | 251/251，exit 0 | `node --test tests/app-shell/agent-surface.test.mjs tests/app-shell/view-timeline.test.mjs tests/app-shell/agent-stream-finalize.test.mjs tests/architecture/dependency-rules.test.mjs`；`.local/ai-chat-follow-targeted.log`；新增四路径行为用例在旧实现下失败（`.local/ai-chat-follow-before-tests.log`）；覆盖缓存/首次聊天、新对话占位、项目切换及原回放阅读不跳动用例，不代表全量 |
+| Electron 聊天切换与回放定向检查 | 2026-10-14 | 16 场景通过，exit 0，renderer errors 0 | `.local/ai-chat-follow-check.cjs`（复用 `.local/ai-reading-check.html`）、`.local/ai-chat-follow-electron.stdout.log`、`artifacts/ai-chat-follow-2026-10-14/result.json`；深浅主题 × 1280/391px × 首次聊天/缓存聊天/占位/项目四路径，通过真实 AgentSurface 公共入口调用、本地模拟 API；新聊天默认落底，空白聊天立即隐藏旧按钮，每场景同时复核回放保留可见正文锚点（误差 ≤1px）；旧实现切换后仍距底部 826px（同目录 `baseline.json`），不调用模型或修改作品 |
+| 静止正文 / 连续复制反馈 / 时间线 / 阅读跟随 / 定稿 / Markdown / 架构定向检查 | 2026-10-14 | 286/286，exit 0 | `node --test tests/app-shell/view-timeline.test.mjs tests/app-shell/agent-surface.test.mjs tests/app-shell/agent-stream-finalize.test.mjs tests/app-shell/markdown-lite.test.mjs tests/architecture/dependency-rules.test.mjs`；`.local/ai-idle-feedback-targeted.log`；两项回归在各自旧实现下失败（`.local/ai-stream-idle-before-tests.log`、`.local/ai-copy-feedback-before-tests.log`），覆盖选区释放补齐、跟随、同文本定稿、最近一次复制反馈、不同消息独立计时与重置清理；不代表全量 |
+| Electron 长回复输入 / 连续复制反馈定向检查 | 2026-10-14 | 4 输入场景 + 4 复制场景通过，exit 0，renderer errors 0 | `.local/ai-stream-idle-check.cjs`、`.local/ai-copy-feedback-check.cjs`（复用 `.local/ai-reading-check.html`）；对应 `.local/ai-stream-idle-electron.stdout.log`、`.local/ai-copy-feedback-electron.stdout.log` 与 `artifacts/ai-stream-idle-2026-10-14/result.json`、`artifacts/ai-copy-feedback-2026-10-14/result.json`；深浅主题 × 1280/391px，20855 字符本地正文，12 次原生光标移动导致的 DOM 修改由基线 36 次降至各场景 0 次，正文节点/末尾光标保持，阅读偏移 0px；新输出、选区释放和定稿正常，连续复制提示按最新成功恢复且焦点保持；隐藏 offscreen，模拟剪贴板，不调用模型 |
+| 消息操作焦点 / 时间线 / 阅读跟随 / 定稿 / 架构定向检查 | 2026-10-14 | 248/248，exit 0 | `node --test tests/app-shell/view-timeline.test.mjs tests/app-shell/agent-surface.test.mjs tests/app-shell/agent-stream-finalize.test.mjs tests/architecture/dependency-rules.test.mjs`；`.local/ai-actions-targeted-tests.log`；新增一个行为用例在旧实现下失败（`.local/ai-actions-before-tests.log`），覆盖复制/分支的在途防重入、成功/失败恢复与聊天切换后的旧响应；不包含 UI、desktop、后端或 CLI 全量 |
+| Electron 消息操作焦点定向检查 | 2026-10-14 | 16 操作场景 + 4 Tab 场景 + 流式复制通过，exit 0，renderer errors 0 | `.local/ai-actions-focus-check.cjs`（复用 `.local/ai-reading-check.html`）、`.local/ai-actions-focus-electron.stdout.log`、`artifacts/ai-actions-focus-2026-10-14/result.json`；深浅主题 × 1280/391px × 复制/分支 × 成功/失败，原生 Enter（含字符事件）激活，Tab 可前进且旧操作完成不抢回焦点；焦点保留，阅读偏移 ≤1px，失败可重试，流式生成继续、分支仍禁用；旧实现真实 DOM 确认焦点丢失（同目录 `baseline.json`），模拟剪贴板及分支请求，不调用真实模型 |
+| 桌面生成阅读交互收口，全部 app-shell / architecture | 2026-10-14 | 708/708，exit 0 | `node --test tests/app-shell/*.test.mjs tests/architecture/*.test.mjs`；`.local/ai-maturity-ui-tests.log`；前置六文件定向检查 290/290（`.local/ai-maturity-targeted.log`）；首字前阶段、选区恢复与焦点检查在改动前失败，修复后通过，覆盖此前两项改动；不包含 desktop、CLI 或后端全量 |
+| Electron 生成阅读交互动态检查 | 2026-10-14 | 12 阅读场景 + 8 流程组合通过，exit 0，renderer errors 0 | `.local/ai-maturity-check.cjs`（复用 `.local/ai-reading-check.html`）、`.local/ai-maturity-electron.stdout.log`、`artifacts/ai-maturity-2026-10-14/result.json`；12 场景复核跟随/提示，8 组合为深浅主题 × 1280/391px × 减少动态开/关，均覆盖等待→思考→正文→停止、持续输出保留选区、流式/已定稿选区补齐、焦点恢复与原生 PageUp/PageDown；隐藏 offscreen、本机权限、本地确定性文本 |
+| 桌面上翻期间生成提示 / 阅读跟随 / 时间线 / 定稿 / 架构定向测试 | 2026-10-14 | 246/246，exit 0 | `node --test tests/app-shell/agent-surface.test.mjs tests/app-shell/view-timeline.test.mjs tests/app-shell/agent-stream-finalize.test.mjs tests/architecture/dependency-rules.test.mjs`；`.local/ai-generating-cue-tests.log`；生成提示用例在旧显示逻辑下失败，加入显示逻辑后通过，覆盖定稿、停止、失败及回到最新；含上一项滚动回归，不代表全量 |
+| Electron 生成提示真实 DOM 定向检查 | 2026-10-14 | 12 场景通过，exit 0，renderer errors 0 | `.local/ai-generating-cue-check.cjs`（复用 `.local/ai-reading-check.html`）、`.local/ai-generating-cue-electron.stdout.log`、`artifacts/ai-generating-cue-2026-10-14/result.json`；深浅主题 × 1280/391px 窗口 × 上翻 2/20/48px；提示完整可见，按钮高度保持 29px，追加及定稿时阅读偏移均为 0px，点击恢复跟随；隐藏 offscreen 窗口、正常本机权限、本地确定性文本 |
+| 桌面生成结果阅读跟随 / 时间线 / 定稿 / 架构定向测试 | 2026-10-14 | 245/245，exit 0 | `node --test tests/app-shell/agent-surface.test.mjs tests/app-shell/view-timeline.test.mjs tests/app-shell/agent-stream-finalize.test.mjs tests/architecture/dependency-rules.test.mjs`；`.local/ai-reading-tests.log`；新增轻微上翻回归用例在旧容差下失败，修复后通过，涵盖追加、定稿、快照回放及恢复跟随；不代表全量 |
+| Electron 阅读跟随真实 DOM 定向检查 | 2026-10-14 | 6 场景通过，exit 0，renderer errors 0 | `.local/ai-reading-check.cjs` / `.html`、`.local/ai-reading-electron.stdout.log`、`artifacts/ai-reading-2026-10-14/result.json`；深浅主题分别上翻 2/20/48px，追加及定稿时 scrollTop 变化均为 0px，点击最新后继续跟随；offscreen 隐藏窗口持续绘制、正常本机权限、本地确定性文本，不调用真实模型 |
 | 桌面组件圆角 / 表面，UI / desktop / architecture | 2026-10-12 | 711/711，exit 0 | `node --test tests/app-shell/*.test.mjs tests/desktop/*.test.mjs tests/architecture/*.test.mjs`；`.local/apple-design-ui-tests.log`；包含当前圆角契约与既有布局、交互、主题检查，不等于全量 |
 | Electron 圆角 / 表面界面验收 | 2026-10-12 | exit 0，renderer errors 0 | `.local/apple-design-review.cjs`、`.local/apple-design-after.stdout.log`、`artifacts/apple-design-2026-10-12/after/layout.json`；隐藏窗口持续绘制，1440/1280/1024/768/391px 无横向溢出、发送可命中；菜单可点击、浅色阴影实际生效、三项显示偏好生效；设置页 768/391px 滚动区无横向溢出、关闭可命中 |
 | 桌面全量 `npm test`，v0.5.4 构建前 | 2026-10-12 | 2089/2089，exit 0 | `.local/release-full-tests.log`；包含生成阶段、文稿定稿、分支继承/重启/失败清理、普通文件夹配置和本轮圆角/表面契约，运行在正常权限下；不包含 CLI |
@@ -40,6 +54,46 @@
 记录于：2026-10-12｜状态：当前有效｜依据：Node 遍历根 `src/`，按 LF 归一统计 `.js/.mjs`（`split("\n").length` 含末尾空行，UTF-8 字节）。逻辑源码 126 文件，0 越线；近字节红线文件：`model-settings-page.js` 51048B、`app.js` 50360B、`journal-handlers.mjs` 50150B。样式现状：`styles.css` 2682 行 / 88656B，`agent.css` 2148 行 / 53078B。清除过期过程注释、合并重复声明并复用原样式，未新增依赖或源码模块。
 
 ## 最近变更
+
+### v0.5.5 源码与本地桌面包更新（记录于：2026-10-14｜状态：当前有效｜依据：2096 项桌面全量检查、构建与包内源码核验）
+
+- 桌面版与锁文件同步升级至 0.5.5，包含本次会话的生成阅读优化；双语 README 改用已发布 Windows x64 安装包的通用下载指引，避免将本地构建版本误写为已上传的 Release 附件。依赖与 CLI 未改动。
+- 更新工作区可运行程序 `dist-desktop/win-unpacked/WWriting Novel Agent.exe`，文件元数据 FileVersion=0.5.5 / ProductVersion=0.5.5.0；构建安装器 `dist-desktop/WWriting Novel Agent-0.5.5-Setup.exe`，101972427 字节，SHA-256 `d3128b23ed44c02218a958c1da62654c708377d7bde4eda5fea4d2276228ee68`，Authenticode 状态 NotSigned。四个本轮改动源码在 `app.asar` 内与工作区原文逐字节一致；已验证打包程序启动，未在本机运行安装器。
+- 推送前扫描范围为待提交文件与最近 200 条历史，日志保存在忽略的 `.local/reading-update-*-scan.json`；临时脚本、截图、日志、缓存与安装器继续忽略。验证范围见顶部，不代表 CLI 或真实在线模型长篇的新一轮验收；本轮只推送源码，本地构建产物不上传 GitHub Release。
+
+### 聊天切换跟随状态（记录于：2026-10-14｜状态：当前有效｜依据：251 项定向检查与 Electron 16 场景）
+
+- 修复旧聊天上翻后，暂停跟读及“回到最新”按钮泄漏到另一条聊天的问题。共用 `view.reset` 默认恢复跟读并隐藏旧按钮；`index.applySnapshot` 的视图重建显式保留阅读状态，继续保障快照回放不打断阅读。内部重置参数用于区分两种已存在的入口，无新增产品配置、持久状态、模块、依赖或样式。
+- 本轮生产源码净增 4 行，`view.js` 为 505 行 / 23742B、`index.js` 为 779 行 / 40148B（Node 按 LF 归一统计，含末尾空行）；新增一个行为用例覆盖四个切换路径，既有重建保持阅读用例也通过。真实页面按正文锚点检查回放，不把补入历史后的 scrollTop 合理变化当作阅读跳动。
+- 验证范围见顶部，过程产物继续忽略；未重跑 UI、desktop、后端或 CLI 全量，未调用真实模型，未重新打包安装版。
+
+### 静止正文与连续复制反馈（记录于：2026-10-14｜状态：当前有效｜依据：286 项定向检查与 Electron 4+4 场景）
+
+- 移动输入框光标会触发文档 `selectionchange`，旧实现每次都重新解析长回复并重建末尾光标；帧入口复用已有 `renderedStreamText`，正文未变化时只保留原滚动处理。约 2 万字符回复旁的 12 次光标移动在旧实现产生 36 次 DOM 修改，修复后深浅/宽窄四场景均为 0；保留新输出、正文选区补齐、跟随及原地定稿。
+- 连续复制时，旧成功计时器会提前撤除新一轮“已复制”提示；每个按钮仅保留最近一次成功的恢复计时器，继续沿用全局集合在重置/销毁时清理。新增两个可证伪的行为用例，均在对应旧逻辑下失败。
+- 本轮生产源码净增 5 行，仅修改 `view/timeline.mjs`，当前 665 行 / 29087B（Node 按 LF 归一统计，含末尾空行）；无新模块、依赖、样式或持久状态。过程产物继续忽略；只确认冗余解析与 DOM 更新被消除，不宣称真实模型吞吐、GPU 帧率或全量通过，未重新打包安装版。
+
+### 消息操作焦点优化（记录于：2026-10-14｜状态：当前有效｜依据：248 项定向检查与 Electron 操作/Tab/流式检查）
+
+- 修复键盘复制及分支时，原生 `disabled` 使按钮立刻失焦的问题；共用消息操作只替换三行，使用 `aria-disabled` 和既有点击入口防重入，完成或失败后恢复操作。自然保留焦点与 Tab 顺序，不加焦点恢复逻辑；流式分支锚点门槛、复制原文与旧响应代次守卫继续保留。
+- 生产文件 `view/timeline.mjs` 为 660 行 / 28865B（Node 按 LF 归一统计，含末尾空行）；无新增源码模块、依赖、样式或持久状态。一个新增行为用例覆盖复制/分支的三种结果，验证与截图见顶部，过程产物继续忽略。
+- 本轮未重复运行 UI 全量、desktop、后端或 CLI 全量，未调用真实模型、真实剪贴板或实际分支接口；屏幕阅读器实际播报未验证，未重新打包安装版。
+
+### 生成阅读交互收口（记录于：2026-10-14｜状态：当前有效｜依据：708 项界面/架构检查与 Electron 12+8 场景）
+
+- 首字前使用“等待模型回复”，收到思考文本后切到“思考中”，公开正文到达后显示“正在生成”；复用 `reasoningLabel` 与已有事件投影，零思考、终态与重试行为继续保留。正文有选区时仍暂缓 DOM 更新；明确回到最新才解除对话内选区、立即补齐内容并恢复跟读，普通渲染与对话外选区保持。
+- 对话区可通过 Tab 聚焦并有“聊天记录”可访问名称，使用浏览器原生 PageUp/PageDown；回到最新按钮隐藏后将焦点交回对话且不额外滚动。三处生产文件净增 10 行（Node 按 LF 归一比较本项开始/结束行数，含注释清理），无新模块、依赖、样式或持久状态；更新既有阶段/键盘检查，新增一个可证伪的选区恢复用例。
+- 验证范围见顶部，临时脚本、日志、截图继续忽略。已测的等待、生成、阅读、选区、停止与定稿交互可以收口；此结论不代表真实模型长时间输出、网络异常或 GPU 帧率已验证。未重跑 CLI、后端/desktop 全量或真实模型长篇验证，未重新打包安装版。
+
+### 上翻期间生成提示（记录于：2026-10-14｜状态：当前有效｜依据：246 项定向测试与 Electron 12 场景检查）
+
+- 作者上翻时，工作组里的“正在生成”可能在视野外；复用输入台上方的按钮显示“正在生成 · 回到最新”，定稿、停止或失败后恢复原文案。生产源码只增加两行，直接取真实正文流状态并跳过相同文案的 DOM 写入，无新样式、依赖或状态字段。
+- 新增一个行为用例覆盖生成提示、终态撤除、按钮复用及点击恢复；Electron 深浅主题与宽窄窗口检查见顶部，截图在 `artifacts/ai-generating-cue-2026-10-14/generating-*.png`。源码与规格已同步；本项未重跑桌面全量、CLI 或真实模型长篇验证，未重新打包安装版。
+
+### 生成结果阅读跟随（记录于：2026-10-14｜状态：当前有效｜依据：245 项定向测试与 Electron 六场景检查）
+
+- 原距底部 48px 内仍会自动跟随，轻微上翻回看会被新内容拉回末尾；`view.js` 仅将容差收紧至 1px，沿用已有跟随状态、阅读锚点和“回到最新”按钮。生成、定稿、回放保持阅读位置，滚到底或点击按钮恢复跟读；新增一个行为回归用例并调整既有底部边界夹具。
+- 本轮验证见顶部。CodeGraph 对时间线的索引已过期，定位后直接读取当前源码；Electron 隔离权限下在加载前退出，改用正常本机权限及既有 offscreen 持续绘制方式完成检查。生产源码只改一行，无样式、依赖或模块增量；未重跑桌面全量、CLI 或真实模型长篇验证，未重新打包安装版。
 
 ### v0.5.4 安装器构建与发布前验证（记录于：2026-10-12｜状态：当前有效｜依据：版本清单、全量测试与打包产物）
 

@@ -10,7 +10,7 @@
 //   - 计划：活动展开/终态折叠、无手动编辑入口；
 //   - 确认：普通三选、extreme 精确文字前禁用、终态 decision 锁定；
 //   - reasoning 不进入 Assistant 正文，但进入 reasoning 工作项；思考标签可见；
-//   - 滚动锁：显式 follow 状态（距底部 ≤48px 跟随）、上滚后保持 scrollTop +
+//   - 滚动锁：显式 follow 状态（距底部 ≤1px 跟随）、上滚后保持 scrollTop +
 //     「回到最新」按钮、点击恢复 follow；重建后不打断阅读更早内容；
 //   - 模型菜单视口钳制与内容列 CSS 基线（agent.css 断言）。
 import assert from "node:assert/strict";
@@ -1229,7 +1229,7 @@ test("多 Run：首个完成组的终态耗时保持自身值，不被第二个 
   const groups = [...root.querySelectorAll(".agent-work-group")];
   assert.equal(groups.length, 2, "两个工作组");
   assert.equal(groups[0].querySelector(".agent-work-status").textContent, "工作了 10 秒", "Run A 文案保持自身值");
-  assert.equal(groups[1].querySelector(".agent-work-status").textContent, "思考中", "Run B 按真实活动显示阶段");
+  assert.equal(groups[1].querySelector(".agent-work-status").textContent, "等待模型回复", "Run B 首字前如实显示等待");
   assert.equal(groups[1].open, true, "Run B 运行中展开");
 });
 
@@ -1386,12 +1386,14 @@ test("工具工作项标签：shell 正在运行命令→已运行命令、read_
   assert.match(toolLabel("a1"), /已运行命令/u);
   surface.applyEvent(toolStarted("a2", "read_file", { path: "chapter.md" }));
   assert.match(toolLabel("a2"), /正在读取文件/u);
-  // reasoning 工作项：运行中 label 思考中；完成后变为已完成思考
+  // 首字前等待回复，收到思考内容后显示思考中，终态显示真实耗时。
   surface.applyEvent(ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }));
   const group = root.querySelector(".agent-work-group");
   assert.ok(group, "有 reasoning 工作项时渲染工作组");
   const reasoningRow = group.querySelector('[data-kind="reasoning"]');
   const reasoningLabel = reasoningRow.querySelector(".agent-work-item__label");
+  assert.equal(reasoningLabel.textContent, "等待模型回复");
+  surface.applyEvent(ev("reasoning_delta", { turn_id: "turn-1", text: "确认前情。" }));
   assert.match(reasoningLabel.textContent, /思考中/u);
   surface.applyEvent(ev("reasoning_completed", { turn_id: "turn-1", input_id: "in-1", text: "完成", availability: "available" }));
   surface.applyEvent(ev("model_turn_completed", { turn_id: "turn-1", input_id: "in-1", outcome: "completed" }));
@@ -2359,7 +2361,7 @@ test("撤回在途切走会话：迟到的失败不在新视图弹 toast（viewG
 // 滚动锁（Task 7）：显式 follow 状态 + 回到最新；重建不打断阅读更早内容
 // ===========================================================================
 
-test("滚动锁：距底部 ≤48px 时增量事件自动跟随到底部", async () => {
+test("滚动锁：距底部 ≤1px 时增量事件自动跟随到底部", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
@@ -2369,11 +2371,85 @@ test("滚动锁：距底部 ≤48px 时增量事件自动跟随到底部", async
   assert.equal(latest.hidden, true, "初始处于 follow 模式，按钮隐藏");
   conv.scrollHeight = 500;
   conv.clientHeight = 200;
-  conv.scrollTop = 295; // 距底部 5px < 阈值
+  conv.scrollTop = 299; // 容忍浏览器底部位置的小数舍入
   conv._fire("scroll");
   assert.equal(latest.hidden, true, "近底部时按钮保持隐藏");
   surface.applyEvent(toolStarted("a1", "shell", { command: "npm test" }));
-  assert.equal(conv.scrollTop, 300, "距底部 ≤48px 时新事件应跟随到底部");
+  assert.equal(conv.scrollTop, 300, "距底部 ≤1px 时新事件应跟随到底部");
+});
+
+test("滚动锁：轻微上翻后，流式追加、定稿及回放均保持阅读位置", async () => {
+  const frames = [];
+  const { root, surface } = await makeSurface({ requestFrame: (cb) => frames.push(cb) });
+  await surface.openProject("D:\\novel");
+  const running = session({ status: "running", active_run: activeRun() });
+  surface.applySnapshot(snapshotOf(running));
+  const conv = root.querySelector('[data-testid="agent-conversation"]');
+  const latest = root.querySelector('[data-testid="agent-scroll-latest"]');
+  conv.scrollHeight = 500;
+  conv.clientHeight = 200;
+  const events = [];
+  for (const offset of [2, 20, 48]) {
+    latest._fire("click");
+    conv.scrollTop -= offset;
+    conv._fire("scroll");
+    assert.equal(latest.hidden, false, `上翻 ${offset}px 即暂停跟随`);
+    const readingTop = conv.scrollTop;
+    const delta = ev("assistant_message_delta", { text: "正在续写。" });
+    events.push(delta);
+    surface.applyEvent(delta);
+    while (frames.length) frames.shift()();
+    assert.equal(conv.scrollTop, readingTop, "流式追加不得抢回底部");
+    const completed = ev("assistant_message_completed", { text: "正在续写。" });
+    events.push(completed);
+    surface.applyEvent(completed);
+    assert.equal(conv.scrollTop, readingTop, "定稿不得抢回底部");
+    surface.applySnapshot(snapshotOf(running, events));
+    assert.equal(conv.scrollTop, readingTop, "快照回放不得抢回底部");
+    assert.equal(latest.hidden, false);
+  }
+  conv.scrollTop = 300;
+  conv._fire("scroll");
+  assert.equal(latest.hidden, true, "手动滚到底部恢复跟随");
+  conv.scrollHeight += 50;
+  surface.applyEvent(ev("assistant_message_delta", { text: "继续生成。" }));
+  while (frames.length) frames.shift()();
+  assert.equal(conv.scrollTop, 350, "恢复后继续跟随新增正文");
+  surface.destroy();
+});
+
+test("滚动锁：切换聊天、缓存聊天、新对话与项目时恢复跟随，不继承旧聊天的暂停状态", async () => {
+  for (const target of ["chat", "cached", "placeholder", "project"]) {
+    const { root, surface } = await makeSurface({
+      requestFrame: (cb) => cb(),
+      apiOverrides: {
+        fetchSnapshot: async (options) => snapshotOf(session({ session_id: options?.sessionId ?? "sid-1", last_seq: 1 }), [
+          { ...ev("assistant_message_completed", { text: "聊天中的正文。" }), seq: 1 }
+        ])
+      }
+    });
+    await surface.openProject("D:\\novel", "sid-1");
+    if (target === "cached") await surface.switchSession("sid-2");
+    const conv = root.querySelector('[data-testid="agent-conversation"]');
+    const latest = root.querySelector('[data-testid="agent-scroll-latest"]');
+    conv.scrollHeight = 500;
+    conv.clientHeight = 200;
+    conv.scrollTop = 0;
+    conv._fire("scroll");
+    surface.applyEvent(ev("assistant_message_delta", { text: "旧聊天的生成片段。" }));
+    assert.equal(latest.hidden, false);
+    assert.equal(latest.textContent, "正在生成 · 回到最新");
+    if (target === "chat") await surface.switchSession("sid-3");
+    if (target === "cached") await surface.switchSession("sid-1");
+    if (target === "placeholder") surface.newSessionPlaceholder();
+    if (target === "project") await surface.openProject("D:\\other-novel", "sid-1");
+    assert.equal(latest.hidden, true, `${target} 不继承旧聊天的暂停跟随`);
+    assert.equal(latest.textContent, "回到最新", "旧正文生成提示不泄漏");
+    conv.scrollHeight = 600;
+    surface.applyEvent(ev("assistant_message_completed", { text: "新聊天的最新正文。" }));
+    assert.equal(conv.scrollTop, 400, `${target} 的新内容按原默认行为跟随`);
+    surface.destroy();
+  }
 });
 
 test("滚动锁：用户上滚后保持 scrollTop 并出现「回到最新」", async () => {
@@ -2393,6 +2469,38 @@ test("滚动锁：用户上滚后保持 scrollTop 并出现「回到最新」", 
   assert.equal(latest.hidden, false, "按钮持续可见直到用户回到最新");
 });
 
+test("回到最新：上翻时提示真实正文生成，定稿、停止和失败后撤掉提示", async () => {
+  for (const terminal of ["assistant_message_completed", "run_cancelled", "run_failed"]) {
+    const frames = [];
+    const { root, surface } = await makeSurface({ requestFrame: (cb) => frames.push(cb) });
+    await surface.openProject("D:\\novel");
+    surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
+    const conv = root.querySelector('[data-testid="agent-conversation"]');
+    const latest = root.querySelector('[data-testid="agent-scroll-latest"]');
+    conv.scrollHeight = 500;
+    conv.clientHeight = 200;
+    conv.scrollTop = 280;
+    conv._fire("scroll");
+    assert.equal(latest.textContent, "回到最新", "正文开始前不显示生成提示");
+    surface.applyEvent(ev("assistant_message_delta", { text: "第一段。" }));
+    while (frames.length) frames.shift()();
+    assert.equal(latest.textContent, "正在生成 · 回到最新");
+    assert.equal(latest.hidden, false);
+    assert.equal(conv.scrollTop, 280, "更新状态不能抢走阅读位置");
+    surface.applyEvent(ev("assistant_message_delta", { text: "第二段。" }));
+    while (frames.length) frames.shift()();
+    assert.equal(root.querySelector('[data-testid="agent-scroll-latest"]'), latest, "复用同一按钮");
+    surface.applyEvent(ev(terminal, { text: "第一段。第二段。", error: "fixture failure" }));
+    assert.equal(latest.textContent, "回到最新", `${terminal} 后撤掉生成提示`);
+    assert.equal(latest.hidden, false, "终态仍允许作者回到最新内容");
+    assert.equal(conv.scrollTop, 280);
+    latest._fire("click");
+    assert.equal(latest.hidden, true);
+    assert.equal(conv.scrollTop, 300);
+    surface.destroy();
+  }
+});
+
 test("回到最新位于会话与输入框之间，不覆盖滚动内容", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
@@ -2402,6 +2510,8 @@ test("回到最新位于会话与输入框之间，不覆盖滚动内容", async
   const surfaceElement = root.children[0];
 
   assert.notEqual(latest._parent, conversation, "回到最新不能作为会话滚动内容的覆盖层");
+  assert.equal(conversation.getAttribute("tabindex"), "0", "对话区应能通过键盘聚焦阅读");
+  assert.equal(conversation.getAttribute("aria-label"), "聊天记录");
   assert.ok(
     surfaceElement.children.indexOf(latest) < surfaceElement.children.indexOf(composer),
     "回到最新应放在会话和输入框之间"
@@ -2421,6 +2531,7 @@ test("滚动锁：点击「回到最新」滚到底部并恢复 follow 模式", 
   assert.equal(latest.hidden, false);
   latest._fire("click");
   assert.equal(conv.scrollTop, 300, "点击后应滚到底部");
+  assert.equal(conv._focused, true, "按钮隐藏后焦点回到对话，继续键盘阅读");
   assert.equal(latest.hidden, true, "回到最新后按钮隐藏");
   surface.applyEvent(toolStarted("a2", "shell", { command: "npm test 2" }));
   assert.equal(conv.scrollTop, 300, "恢复 follow 后增量事件继续贴底");
@@ -2436,7 +2547,7 @@ test("重建对话 DOM：近底部时重新锚定末端；阅读更早内容时�
   conv.scrollHeight = 500;
   conv.clientHeight = 200;
   // 近底部：重建（新 session 快照）后应重新锚定到末端
-  conv.scrollTop = 290;
+  conv.scrollTop = 299.5;
   conv._fire("scroll");
   surface.applySnapshot(snapshotOf(session({ session_id: "sess-b", status: "running", active_run: activeRun() }), [
     ev("input_queued", { input_id: "in-1", text: "新会话消息", source: "chat" }, { session_id: "sess-b" })
@@ -5246,11 +5357,13 @@ test("流式光标：delta 渲染实心光标于正文末尾，completed 定稿�
 });
 
 // AICSS thinking-reasoning：片段滚动替换——新片段显示时重启替换动效 class。
-test("思考到正文流的阶段即时切换，正文定稿后不残留生成中", async () => {
+test("等待、思考到正文流的阶段即时切换，正文定稿后不残留生成中", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
   surface.applySnapshot(snapshotOf(session({ status: "running", active_run: activeRun() })));
   surface.applyEvent(ev("model_turn_started", { turn_id: "turn-1", input_id: "in-1", reasoning_capability: "supported" }));
+  assert.equal(root.querySelector(".agent-work-status").textContent, "等待模型回复");
+  surface.applyEvent(ev("reasoning_delta", { turn_id: "turn-1", text: "确定场景。" }));
   assert.equal(root.querySelector(".agent-work-status").textContent, "思考中");
   surface.applyEvent(ev("assistant_message_delta", { text: "雨落在窗沿。" }));
   assert.equal(root.querySelector(".agent-work-status").textContent, "正在生成");

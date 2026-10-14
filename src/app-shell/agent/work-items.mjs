@@ -123,6 +123,7 @@ export function toolLabel(tool, state) {
 //（model_turn_started → reasoning_completed 事件时间戳差，秒四舍五入、最小 1）；
 // 无时间戳可算（或时钟倒挂）时回退「已完成思考」。
 export function reasoningLabel(item) {
+  if (item?.state === "running" && !item.text) return "等待模型回复";
   if (!item || item.state !== "completed") return "思考中";
   // 零思考轮如实标注：官方思考为按请求非确定输出（2026-08 实测存在整段时间窗
   // 不输出），空文本不是「内容丢失」——显示「思考 N 秒」会误导用户点开找内容。
@@ -398,7 +399,10 @@ export function reduceWorkEvent(work, event) {
     }
     case "reasoning_delta": {
       const item = reasoningItem(work, payload.turn_id);
-      if (item && typeof payload.text === "string") item.text += payload.text;
+      if (item && typeof payload.text === "string") {
+        item.text += payload.text;
+        item.label = reasoningLabel(item);
+      }
       break;
     }
     case "reasoning_completed": {
@@ -647,8 +651,7 @@ export function reduceWorkEvent(work, event) {
       group.retryHint = null;
       // 第十二轮 F2：终态清扫——崩溃恢复批次不闭合的 item 就地终结为 cancelled
       //（重放/重连同算法，确定性收敛）。工具 label 走 toolLabel 的 cancelled
-      // 分支（「已停止读取文件」类）；reasoning 不能走 reasoningLabel——它对
-      // 非 completed 一律返回「思考中」，这里明文置「思考已停止」（F2 验收口径）。
+      // 分支（「已停止读取文件」类）；reasoning 终态显式标注「思考已停止」。
       // 审核修订（P0-3）：①工具项也要更新 label（否则显示「正在读取文件」且
       // Step 2.1 断言 toolLabel 必败）；②清扫必须纳入 waiting 项（F13 决策等待
       // 置的态）——否则直接终态时「等待确认」工具项永久残留。

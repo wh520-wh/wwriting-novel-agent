@@ -178,11 +178,11 @@ class MockElement {
 // 夹具：按壳的接线方式构造 ctx（共享引用 + 活绑定 getter）
 // ---------------------------------------------------------------------------
 
-function makeTimeline({ scheduleFrame = (cb) => cb() } = {}) {
-  const doc = {
+function makeTimeline({ scheduleFrame = (cb) => cb(), showToast = () => {} } = {}) {
+  const doc = Object.assign(new MockElement("document"), {
     createElement: (tag) => new MockElement(tag),
     createTextNode: (text) => new TextNode(text)
-  };
+  });
   const messages = new MockElement("div");
   const conv = new MockElement("div");
   const timelineSeqs = new Map();
@@ -200,7 +200,7 @@ function makeTimeline({ scheduleFrame = (cb) => cb() } = {}) {
     messages,
     conv,
     scheduleFrame,
-    showToast: () => {},
+    showToast,
     timelineSeqs,
     messageNodes,
     pendingSubmissions,
@@ -214,6 +214,81 @@ function makeTimeline({ scheduleFrame = (cb) => cb() } = {}) {
   };
   return { timeline: createTimelineView(ctx), ctx, shared, messages, conv, timelineSeqs, messageNodes, pendingSubmissions, failedSubmissions };
 }
+
+test("输入框选区变化不重绘静止正文，正文选区释放后仍补齐并跟随，同文本定稿保留", () => {
+  const h = makeTimeline();
+  const state = { lastSeq: 10, revisions: { messages: 1 }, conversation: [], assistantStream: { text: "首段。" } };
+  h.shared.currentState = state;
+  h.timeline.syncStream(state);
+  const bubble = h.messages.children[0];
+  const text = bubble.querySelector(".agent-message-text");
+  const caret = bubble.querySelector(".agent-stream-caret");
+  h.ctx.doc._fire("selectionchange");
+  assert.equal(bubble.querySelector(".agent-stream-caret"), caret, "没有新输出时，移动输入框光标不重建正文光标");
+  const selection = { isCollapsed: false, rangeCount: 1, getRangeAt: () => ({ intersectsNode: () => true }) };
+  h.ctx.doc.getSelection = () => selection;
+  state.assistantStream.text += "下一段。";
+  h.timeline.syncStream(state);
+  assert.equal(text.textContent.includes("下一段。"), false, "正文选中时暂缓 DOM 更新");
+  h.conv.scrollHeight = 900;
+  h.conv.clientHeight = 200;
+  h.conv.scrollTop = 400;
+  selection.isCollapsed = true;
+  h.ctx.doc._fire("selectionchange");
+  assert.equal(text.textContent.includes("下一段。"), true, "累计文本未再增长也要补齐暂缓内容");
+  assert.equal(h.conv.scrollTop, 700, "原本跟读时，补齐后继续落底");
+  state.conversation = [{ role: "assistant", text: state.assistantStream.text, seq: 11, event_id: "e11", event_key: "e11" }];
+  state.assistantStream = null;
+  state.revisions.messages += 1;
+  h.timeline.syncMessages(state);
+  h.timeline.syncStream(state);
+  assert.equal(h.messages.children[0], bubble, "相同正文仍可原地定稿");
+  assert.equal(bubble.querySelector(".agent-stream-caret"), null);
+  h.timeline.destroy();
+});
+
+test("明确回到最新会解除正文选区并补齐内容，保留对话外的选区", () => {
+  for (const completed of [false, true]) {
+    const h = makeTimeline();
+    const state = { lastSeq: 10, revisions: { messages: 1 }, conversation: [], assistantStream: { text: "首段。" } };
+    h.shared.currentState = state;
+    h.timeline.syncStream(state);
+    const text = h.messages.children[0].querySelector(".agent-message-text");
+    let inside = true;
+    let cleared = 0;
+    const selection = {
+      isCollapsed: false, rangeCount: 1,
+      getRangeAt: () => ({ intersectsNode: () => inside }),
+      removeAllRanges() { this.isCollapsed = true; cleared += 1; }
+    };
+    h.ctx.doc.getSelection = () => selection;
+    state.assistantStream.text += "补全段落。";
+    h.timeline.syncStream(state);
+    if (completed) {
+      state.assistantStream = null;
+      state.conversation = [{ role: "assistant", text: "首段。补全段落。", seq: 11, event_id: "e11", event_key: "done-11" }];
+      state.revisions.messages += 1;
+      h.timeline.syncMessages(state);
+      h.timeline.syncStream(state);
+    }
+    assert.equal(text.textContent.includes("补全段落"), false, "有选区时正文暂缓更新");
+    h.conv.scrollHeight = 600;
+    h.conv.clientHeight = 200;
+    h.conv.scrollTop = 100;
+    h.timeline.afterRender();
+    assert.equal(cleared, 0, "普通自动跟随不得解除选区");
+    assert.equal(h.conv.scrollTop, 100);
+    h.timeline.scrollToBottom();
+    assert.equal(cleared, 1, "明确回到最新才解除正文选区");
+    assert.equal(text.textContent.includes("补全段落。"), true, "流式或已定稿内容立即补齐");
+    assert.equal(h.conv.scrollTop, 400);
+    inside = false;
+    selection.isCollapsed = false;
+    h.timeline.scrollToBottom();
+    assert.equal(cleared, 1, "对话外的选区不受影响");
+    h.timeline.destroy();
+  }
+});
 
 test("流式回复原地定稿，复制取完整原文，分支取所选消息锚点", async () => {
   const h = makeTimeline();
@@ -248,6 +323,94 @@ test("流式回复原地定稿，复制取完整原文，分支取所选消息�
     assert.equal(copy.getAttribute("aria-label"), "已复制");
   } finally {
     h.timeline.destroy();
+    if (previous) Object.defineProperty(globalThis.navigator, "clipboard", previous);
+    else delete globalThis.navigator.clipboard;
+  }
+});
+
+test("连续复制的成功提示从最近一次成功计时，不影响其他消息且重置清理计时器", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const previous = Object.getOwnPropertyDescriptor(globalThis.navigator, "clipboard");
+  const h = makeTimeline();
+  Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: async () => {} } });
+  try {
+    h.timeline.syncMessages({ revisions: { messages: 1 }, conversation: [
+      { role: "assistant", text: "第一条正文。", seq: 1, event_id: "e1", event_key: "e1" },
+      { role: "assistant", text: "第二条正文。", seq: 2, event_id: "e2", event_key: "e2" }
+    ] });
+    const buttons = h.messages.querySelectorAll('[data-testid="agent-message-copy"]');
+    const click = (index) => buttons[index]._listeners.get("click")[0]();
+    await click(0);
+    t.mock.timers.tick(700);
+    await click(1);
+    t.mock.timers.tick(500);
+    await click(0);
+    t.mock.timers.tick(400);
+    assert.equal(buttons[0].getAttribute("aria-label"), "已复制", "第一轮旧计时器不能提前撤除第二轮反馈");
+    t.mock.timers.tick(700);
+    assert.equal(buttons[1].getAttribute("aria-label"), "复制内容", "其他消息按自己的成功时间恢复");
+    assert.equal(buttons[0].getAttribute("aria-label"), "已复制");
+    t.mock.timers.tick(500);
+    assert.equal(buttons[0].getAttribute("aria-label"), "复制内容", "最近一次成功后完整展示 1600ms");
+    await click(0);
+    h.timeline.reset();
+    t.mock.timers.tick(1600);
+    assert.equal(buttons[0].getAttribute("aria-label"), "已复制", "重置后不执行旧反馈计时器");
+  } finally {
+    h.timeline.destroy();
+    if (previous) Object.defineProperty(globalThis.navigator, "clipboard", previous);
+    else delete globalThis.navigator.clipboard;
+  }
+});
+
+test("消息操作在途保持焦点入口、防止重复调用，失败可重试且旧响应不影响新聊天", async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis.navigator, "clipboard");
+  try {
+    for (const action of ["copy", "branch"]) {
+      for (const outcome of ["success", "failure", "reset"]) {
+        const notices = [];
+        const h = makeTimeline({ showToast: (text) => notices.push(text) });
+        let calls = 0;
+        let settle;
+        let reject;
+        const request = () => {
+          calls += 1;
+          return new Promise((resolve, fail) => { settle = resolve; reject = fail; });
+        };
+        Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: request } });
+        h.shared.actions = { forkMessage: request };
+        h.timeline.syncMessages({ revisions: { messages: 1 }, conversation: [
+          { role: "assistant", text: "正文。", seq: 1, event_id: "e1", event_key: "e1" }
+        ] });
+        const button = h.messages.children[0].querySelector(`[data-testid="agent-message-${action}"]`);
+        const click = button._listeners.get("click")[0];
+        const pending = click();
+        assert.equal(Boolean(button.disabled), false, "不用原生 disabled，键盘仍能停留及移到下一项");
+        assert.equal(button.getAttribute("aria-disabled"), "true", "在途操作具有暂不可用的可访问状态");
+        await click();
+        assert.equal(calls, 1, "鼠标或键盘重复触发只发起一次请求");
+        if (outcome === "reset") {
+          h.shared.viewGeneration += 1;
+          h.timeline.reset();
+        }
+        if (outcome === "success") settle();
+        else reject(new Error("请求失败"));
+        await pending;
+        if (outcome === "reset") {
+          assert.deepEqual(notices, [], "旧响应不向新聊天报错");
+          assert.equal(button.getAttribute("aria-disabled"), "true", "旧响应不修改已经脱离的按钮");
+        } else {
+          assert.equal(button.getAttribute("aria-disabled"), "false", "成功与失败都恢复操作");
+          assert.deepEqual(notices, outcome === "failure" ? [action === "copy" ? "复制失败" : "请求失败"] : []);
+          const retry = click();
+          assert.equal(calls, 2, "完成后允许再次操作");
+          settle();
+          await retry;
+        }
+        h.timeline.destroy();
+      }
+    }
+  } finally {
     if (previous) Object.defineProperty(globalThis.navigator, "clipboard", previous);
     else delete globalThis.navigator.clipboard;
   }

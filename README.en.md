@@ -88,7 +88,7 @@ You can watch what the agent is doing at any moment. Interrupt it and it resumes
 
 ### Option 1: installer (recommended)
 
-Download `WWriting Novel Agent-0.5.4-Setup.exe` from [Releases](https://github.com/wh520-wh/wwriting-novel-agent/releases). No Node environment needed.
+Download a published Windows x64 installer from [Releases](https://github.com/wh520-wh/wwriting-novel-agent/releases). No Node environment needed.
 
 ### Option 2: run from source
 

@@ -200,7 +200,7 @@ export function createAgentSurface({
     if (!snapshot || typeof snapshot !== "object") return;
     const rebuild = reduceSnapshot(state, snapshot);
     if (rebuild) {
-      view.reset();
+      view.reset({ preserveReading: true });
       pushComposerOptions();
     }
     view.render(state, actions);

@@ -32,7 +32,7 @@ import { createWorkGroupView } from "./view/work-group.mjs";
 import { createCardsView } from "./view/cards.mjs";
 import { createComposerView } from "./view/composer.mjs";
 
-const SCROLL_THRESHOLD = 48;
+const SCROLL_THRESHOLD = 1; // 只容忍底部坐标舍入；轻微上翻也暂停跟随。
 
 // 压缩在途/失败都算「真实活动」：圆环给出轻微活性反馈。
 //（压缩行文案/按钮映射已随时间线分区迁 view/timeline.mjs。）
@@ -57,6 +57,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   conv.dataset.testid = "agent-conversation";
   conv.setAttribute("role", "log");
   conv.setAttribute("aria-live", "polite");
+  conv.setAttribute("tabindex", "0");
+  conv.setAttribute("aria-label", "聊天记录");
 
   const messages = doc.createElement("div");
   messages.className = "agent-messages";
@@ -153,6 +155,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     followLatest = true;
     latestButton.hidden = true;
     timeline.scrollToBottom();
+    conv.focus({ preventScroll: true });
   });
 
   const composer = doc.createElement("div");
@@ -285,8 +288,12 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     get followLatest() { return followLatest; }
   });
 
-  function reset() {
+  function reset({ preserveReading = false } = {}) {
     viewGeneration += 1;
+    if (!preserveReading) {
+      followLatest = true;
+      latestButton.hidden = true;
+    }
     clearToast();
     // 工作组分区清理：计时器 + workGroups 映射 + stopPending 复位（Task 16 起归 workgroup.reset）。
     workgroup.reset();
@@ -451,6 +458,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     const anchorTop = anchor?.getBoundingClientRect().top;
     actions = actionBag;
     currentState = state;
+    const latestLabel = state.assistantStream?.text ? "正在生成 · 回到最新" : "回到最新";
+    if (latestButton.textContent !== latestLabel) latestButton.textContent = latestLabel;
     timeline.syncMessages(state);
     timeline.syncStream(state);
     workgroup.syncRun(state);

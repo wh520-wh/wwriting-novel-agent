@@ -96,6 +96,10 @@ export function createTimelineView(ctx) {
   }
 
   function scrollToBottom() {
+    if (hasSelection(conv)) {
+      doc.getSelection().removeAllRanges();
+      resumeSelectedMessage();
+    }
     const height = Number(conv.scrollHeight ?? 0);
     const client = Number(conv.clientHeight ?? 0);
     conv.scrollTop = Math.max(0, height - client);
@@ -144,15 +148,18 @@ export function createTimelineView(ctx) {
       button.title = label;
       button.setAttribute("aria-label", label);
       button.append(viewIcon(name, 17));
+      let feedbackTimer = null;
       button.addEventListener("click", async () => {
-        if (button.disabled) return;
+        if (button.disabled || button.getAttribute("aria-disabled") === "true") return;
         const entry = messageEntries.get(bubble);
         const generation = ctx.viewGeneration;
-        button.disabled = true;
+        button.setAttribute("aria-disabled", "true");
         try {
           if (name === "copy") {
             await globalThis.navigator.clipboard.writeText(entry.text);
             if (generation !== ctx.viewGeneration) return;
+            clearTimeout(feedbackTimer);
+            feedbackTimers.delete(feedbackTimer);
             button.replaceChildren(viewIcon("check", 17));
             button.setAttribute("aria-label", "已复制");
             button.title = "已复制";
@@ -163,12 +170,13 @@ export function createTimelineView(ctx) {
               button.setAttribute("aria-label", label);
               button.title = label;
             }, 1600);
+            feedbackTimer = timer;
             feedbackTimers.add(timer);
           } else await ctx.actions.forkMessage(entry);
         } catch (error) {
           if (generation === ctx.viewGeneration) showToast(name === "copy" ? "复制失败" : error?.message ?? "创建分支失败，请重试");
         } finally {
-          if (generation === ctx.viewGeneration) button.disabled = false;
+          if (generation === ctx.viewGeneration) button.setAttribute("aria-disabled", "false");
         }
       });
       bar.append(button);
@@ -427,6 +435,7 @@ export function createTimelineView(ctx) {
       renderedStreamText = null;
       return;
     }
+    if (text === renderedStreamText) { afterRender(); return; }
     if (!streamBubble) {
       streamBubble = createMessageBubble("assistant", "", { markdown: true });
       streamBubble.classList.add("agent-message--streamed");
