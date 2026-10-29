@@ -6,7 +6,7 @@
 //
 // ctx 契约（引用共享 + 活绑定 getter，与壳内同名变量语义一致）：
 //   - 共享引用（const 对象，双方便携读写）：doc/composer/slashMenu/input/
-//     composerShell/historyClearHint/composerToolbar/send/controls/contextRing/
+//     composerShell/historyClearHint/composerMeta/send/controls/contextRing/
 //     surface/emptyState/viewIcon/timeline/messages/pendingSubmissions/
 //     failedSubmissions/showToast；
 //   - 活绑定（壳内 let，经 getter 读最新值）：actions/currentState/viewGeneration。
@@ -24,7 +24,7 @@ const EFFORT_LABELS = { low: "低", medium: "中", high: "高" };
 
 export function createComposerView(ctx) {
   const { doc, composer, slashMenu, input, composerShell, historyClearHint,
-          composerToolbar, send, controls, contextRing, surface, emptyState,
+          composerMeta, send, controls, contextRing, surface, emptyState,
           viewIcon, timeline, messages, pendingSubmissions, failedSubmissions,
           showToast } = ctx;
 
@@ -423,6 +423,7 @@ export function createComposerView(ctx) {
       delete send.dataset.busy;
       delete composerShell.dataset.busy;
       input.value = "";
+      autoGrow();
       closeSlashMenu();
       return;
     }
@@ -436,6 +437,7 @@ export function createComposerView(ctx) {
     const pending = { text, node: bubble, inputId: null };
     pendingSubmissions.push(pending);
     input.value = "";
+    autoGrow();
     closeSlashMenu();
     timeline.afterRender();
     Promise.resolve(request).then((result) => {
@@ -463,7 +465,13 @@ export function createComposerView(ctx) {
     });
   }
 
-  input.addEventListener("input", () => renderSlashMenu());
+  // 2026-10-30：空态 56px 单行，输入后按内容增高，超过 180px 内部滚动。
+  function autoGrow() {
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
+  }
+
+  input.addEventListener("input", () => { renderSlashMenu(); autoGrow(); });
   input.addEventListener("focus", () => closeComposerMenus());
   input.addEventListener("keydown", (event) => {
     if (event.isComposing || event.keyCode === 229) return;
@@ -507,6 +515,7 @@ export function createComposerView(ctx) {
     delete send.dataset.busy;
     delete composerShell.dataset.busy;
     input.value = ""; // Task 6：未发送草稿（含占位会话里打的字）不得跨会话/项目泄漏
+    input.style.height = ""; // 2026-10-30：草稿清空后回到 56px 空态
     composerOptions = null;
     controlsSignature = "";
     closeSlashMenu();

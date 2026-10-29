@@ -188,7 +188,15 @@ async function main() {
   assert.equal(rowClicked, true, "普通文件夹行必须中心可命中并点击");
   await waitUntil(win, "document.querySelector('[data-testid=\"agent-composer-input\"]') !== null && !document.querySelector('[data-testid=\"agent-composer-input\"]').disabled", "AgentSurface composer must enable after opening the plain folder", 10000);
   await waitUntil(win, "document.querySelector('[data-testid=\"agent-surface\"]') !== null", "AgentSurface must mount", 10000);
-  assert.notEqual(await read(win, "getComputedStyle(document.querySelector('.agent-composer-shell')).boxShadow"), "none", "浅色输入台阴影必须实际生效，不能仅定义无效 CSS 变量");
+  // 2026-10-30 视觉改版：常驻输入台无阴影，靠 1px 边框与 12px 圆角分层（统一书 §7 R4/R5）。
+  {
+    await win.webContents.executeJavaScript("document.activeElement && document.activeElement.blur()");
+    await delay(180);
+    const composerStyle = await win.webContents.executeJavaScript(`(() => { const el = document.querySelector('.agent-composer-shell'); const cs = getComputedStyle(el); return { shadow: cs.boxShadow, radius: cs.borderRadius, border: cs.borderTopWidth }; })()`);
+    assert.equal(composerStyle.radius, "12px", "输入台应为 12px 圆角");
+    assert.equal(composerStyle.border, "1px", "输入台应保留 1px 边框");
+    assert.equal(composerStyle.shadow, "none", "输入台在非聚焦态不得有阴影");
+  }
 
   // D17（round22）：点「+」后 500ms 内必须出现草稿行（D3 可证伪反馈，不等网络），
   // 顶栏显示文件夹名（D1），草稿行不参与高亮（D2：全局唯一活跃）。

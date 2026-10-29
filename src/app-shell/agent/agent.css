@@ -13,9 +13,8 @@
   --agent-muted: var(--muted);
   --agent-accent: var(--accent);
   --agent-accent-soft: var(--accent-soft);
-  --agent-user-bg: var(--surface-3);
-  --agent-user-ink: var(--btn);
-  --agent-user-border: var(--line);
+  --agent-user-bg: var(--fill-1);
+  --agent-user-ink: var(--ink);
   --agent-send-bg: var(--btn);
   --agent-send-ink: var(--btn-ink);
   --agent-shadow: var(--shadow-pop);
@@ -32,7 +31,7 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 28px var(--content-gutter, 20px) clamp(42px, 7vh, 72px);
+  padding: 20px var(--content-gutter, 20px) clamp(32px, 5vh, 56px);
   /* 扣除原生滚动条的 8px 占位，窄窗内容与输入框保持相同留白。 */
   padding-inline-end: calc(var(--content-gutter, 20px) - 8px);
   display: flex;
@@ -77,7 +76,8 @@
 .agent-composer {
   position: relative;
   flex: 0 0 auto;
-  padding: 12px var(--content-gutter, 20px) 24px;
+  /* 与消息同轴：宽屏时左右内边距自动等于 (100% - 760px) / 2 */
+  padding: 8px max(var(--content-gutter, 20px), calc((100% - var(--content-column, 760px)) / 2)) 14px;
   box-sizing: border-box;
 }
 
@@ -102,40 +102,42 @@
 .agent-composer-shell {
   position: relative;
   width: 100%;
-  display: grid;
-  grid-template-rows: minmax(74px, auto) 42px;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 6px 0 0;
   overflow: visible;
   border: 1px solid var(--agent-line);
-  border-radius: var(--r-lg);
+  border-radius: var(--r);
   background: var(--surface);
   backdrop-filter: none;
-  box-shadow: var(--shadow-sm);
+  box-shadow: none;
   transition: border-color var(--motion-hover), box-shadow var(--motion-layer);
 }
 
 .agent-composer-shell:focus-within {
   border-color: color-mix(in srgb, var(--agent-accent) 55%, var(--agent-line));
-  box-shadow: 0 0 0 3px var(--focus-ring), var(--shadow-sm);
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
-.agent-composer-toolbar {
-  min-width: 0;
-  min-height: 42px;
+/* 框下状态行：模型 / 权限 / 思考强度 + 上下文占用，12px 小字，不占框内一行。 */
+.agent-composer-meta {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  padding: 5px 12px 6px;
+  gap: 6px;
+  min-height: 32px;
+  margin-top: 2px;
+  padding: 0 4px;
 }
 
 /* 三个设置入口共享一套向上浮出的桌面菜单。 */
 .agent-composer-controls {
-  flex: 1 1 0;
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin-right: auto;
+  gap: 2px;
   min-width: 0;
-  padding-right: 10px;
 }
 
 .agent-composer-menu {
@@ -146,14 +148,14 @@
 .agent-composer-menu-trigger {
   min-width: 0;
   max-width: 100%;
-  height: var(--control-compact);
+  height: 24px;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
-  padding: 3px 10px;
+  padding: 2px 8px;
   font-family: inherit;
   font-size: var(--font-xs);
   color: var(--agent-muted);
@@ -162,8 +164,7 @@
 }
 
 .agent-composer-menu + .agent-composer-menu {
-  border-left: 1px solid color-mix(in srgb, var(--agent-line) 72%, transparent);
-  padding-left: 6px;
+  padding-left: 0;
 }
 
 .agent-composer-menu-value {
@@ -320,7 +321,7 @@
 /* 回合间增加 16px 留白。 */
 .agent-messages > .agent-message--assistant + .agent-message--user,
 .agent-messages > .agent-work-group + .agent-message--user {
-  margin-top: 16px;
+  margin-top: 24px;
 }
 
 .agent-empty {
@@ -336,15 +337,15 @@
 }
 
 .agent-empty-mark {
-  width: 64px;
-  height: 64px;
-  margin: 0 auto 22px;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 18px;
   display: grid;
   place-items: center;
-  border: 1px solid var(--agent-line);
-  border-radius: var(--r-lg);
-  background: var(--agent-panel-solid);
-  box-shadow: var(--shadow-sm);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   color: var(--agent-ink);
 }
 
@@ -377,32 +378,32 @@
 
 .agent-empty-action {
   min-width: 0;
-  min-height: 104px;
-  padding: 18px;
+  min-height: 56px;
+  padding: 12px 14px;
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) 16px;
+  grid-template-columns: 24px minmax(0, 1fr) 16px;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   border: 1px solid var(--agent-line);
-  border-radius: var(--r-lg);
-  background: var(--agent-panel-solid);
+  border-radius: var(--r);
+  background: transparent;
   color: var(--agent-ink);
   font: inherit;
   text-align: left;
   cursor: pointer;
-  box-shadow: var(--shadow-xs);
-  transition: background var(--motion-hover), border-color var(--motion-hover), box-shadow var(--motion-layer), transform var(--motion-layer) var(--ease-out);
+  box-shadow: none;
+  transition: background var(--motion-hover), border-color var(--motion-hover);
 }
 
 .agent-empty-action:hover {
-  border-color: var(--agent-line-strong);
-  background: var(--agent-panel-solid);
-  box-shadow: var(--shadow-sm);
-  transform: translateY(-2px);
+  border-color: var(--agent-line);
+  background: var(--fill-1);
+  box-shadow: none;
+  transform: none;
 }
 
 .agent-empty-action:active {
-  transform: translateY(0);
+  transform: none;
   box-shadow: none;
 }
 
@@ -412,13 +413,13 @@
 }
 
 .agent-empty-action-icon {
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
   display: grid;
   place-items: center;
-  border-radius: var(--r-sm);
-  background: var(--agent-panel-muted);
-  color: var(--agent-ink);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-2);
 }
 
 .agent-empty-action > svg {
@@ -466,7 +467,7 @@
 
 .agent-message--user {
   align-self: flex-end;
-  max-width: min(800px, calc(100% - 32px)); /* 用户气泡：封顶 800px，留 32px 边距，靠右 */
+  max-width: min(78%, 560px); /* 用户气泡：比例上限，靠右 */
 }
 
 .agent-message--assistant {
@@ -493,19 +494,19 @@
 .manuscript-words[hidden] { display: none; }
 
 .agent-message-text {
-  padding: 11px 14px;
+  padding: 10px 14px;
   border-radius: var(--r);
-  font-size: var(--font-base);
-  line-height: 1.65;
+  font-size: var(--font-md);
+  line-height: 1.7;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .agent-message--user .agent-message-text {
   background: var(--agent-user-bg);
-  border: 1px solid var(--agent-user-border);
+  border: 0;
   color: var(--agent-user-ink);
-  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0, 0, 0, 0.06));
+  box-shadow: none;
 }
 
 .agent-message--assistant .agent-message-text {
@@ -773,8 +774,8 @@
 
 .agent-work-group {
   width: min(100%, var(--content-column));
-  border: 0;                 /* 打磨 B-5：去描边/圆角/底色/阴影，无框直出 */
-  border-radius: 0;
+  border: 1px solid var(--line);   /* 一组一卡：可折叠的次要信息才有框 */
+  border-radius: var(--r);
   background: transparent;
   box-shadow: none;
   overflow: hidden;
@@ -792,7 +793,7 @@
   margin-inline: 0;
   padding: 6px 12px;          /* 摘要与子项共享同一阅读轴内边距 */
   box-sizing: border-box;
-  border-radius: var(--r);   /* hover 反馈的圆角（仅 hover 时可见背景） */
+  border-radius: 0;           /* 卡头背景由父卡圆角裁切 */
   user-select: none;
 }
 
@@ -840,7 +841,7 @@
 }
 
 .agent-work-group > summary:hover {
-  background: var(--hover);  /* 打磨 B-5：可点击暗示；背景落在 720px 内容轴内 */
+  background: var(--fill-1);
 }
 
 .agent-work-group > summary::-webkit-details-marker {
@@ -848,7 +849,7 @@
 }
 
 .agent-work-group[open] > summary {
-  border-bottom: 0;          /* 打磨 B-5：无框 */
+  border-bottom: 1px solid var(--line);
 }
 
 .agent-work-group > summary::after {
@@ -969,10 +970,9 @@
 }
 
 .agent-tool-path {
-  color: var(--agent-work-meta-fg);
+  color: var(--text-secondary);
   font-weight: var(--weight-regular);
   font-size: var(--font-xs);
-  font-family: var(--mono, ui-monospace, Consolas, monospace);
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -1631,7 +1631,7 @@
 
 .agent-slash-menu {
   position: absolute;
-  left: var(--content-gutter, 20px);
+  left: max(var(--content-gutter, 20px), calc((100% - var(--content-column, 760px)) / 2));
   bottom: calc(100% - 8px);
   width: 320px;
   max-width: calc(100% - 40px);
@@ -1673,8 +1673,10 @@
 
 .agent-composer-input {
   display: block;
-  width: 100%;
-  min-height: 74px;
+  flex: 1 1 auto;
+  width: auto;
+  min-height: 44px;
+  height: 44px;
   max-height: 180px;
   min-width: 0;
   resize: none;
@@ -1683,9 +1685,9 @@
   border-radius: 0;
   background: transparent;
   color: var(--agent-ink);
-  padding: 17px 18px 10px;
-  font-size: var(--font-base);
-  line-height: 1.55;
+  padding: 10px 0 10px 14px;
+  font-size: var(--font-md);
+  line-height: 1.6;
   font-family: inherit;
   box-sizing: border-box;
 }
@@ -1707,11 +1709,13 @@
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
+  align-self: flex-end;
+  margin-bottom: 8px;
   border: 0;
   cursor: pointer;
   transition: background 120ms ease, color 120ms ease, opacity 120ms ease, transform 120ms ease;
-  width: 34px;
-  height: 34px;
+  width: 28px;
+  height: 28px;
   border-radius: var(--r-sm);
   background: var(--agent-send-bg);
   color: var(--agent-send-ink);
@@ -1966,9 +1970,9 @@
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  height: var(--control-compact); /* 与工具栏触发按钮等高 */
-  margin-left: 10px; /* R5：与发送键拉开距离（6 → 10） */
-  margin-right: 2px;
+  height: 32px;
+  margin-left: 0;
+  margin-right: 0;
 }
 
 .agent-context-ring {

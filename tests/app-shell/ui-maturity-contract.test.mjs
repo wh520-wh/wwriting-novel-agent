@@ -24,7 +24,7 @@ test("round10 visual evidence: waits for exact target states before capture", ()
 test("round10 tokens: shared axes, integer type scale and control dimensions have one owner", () => {
   const css = styles();
   for (const declaration of [
-    "--content-column: 1040px",
+    "--content-column: 760px",
     "--reading-column: 720px",
     "--reader-column: 800px",
     "--drawer-width: 380px",

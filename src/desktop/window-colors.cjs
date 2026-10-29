@@ -2,8 +2,8 @@
 // 与 window-chrome.cjs 的 titleBarOverlay 都必须从这里取色。
 // 与 src/app-shell/styles.css 的 --bg / --ink 对齐，避免原生标题栏出现异色断层。
 const WINDOW_COLORS = {
-  light: { background: "#fafbfc", symbol: "#202522" },
-  dark: { background: "#16181a", symbol: "#eef2ef" }
+  light: { background: "#fcfcfb", symbol: "#20201f" },
+  dark: { background: "#151515", symbol: "#f0efec" }
 };
 
 function windowColors(dark = false) {

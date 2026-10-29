@@ -177,10 +177,10 @@ test("三层 token 完整存在：primitive → semantic → component，dark �
     assert.ok(token in rootTokens, `styles.css :root 应声明 ${token}`);
   }
   // semantic 映射到现有 primitive（冻结契约，不私造同义变量）
-  assert.equal(resolveVar("--text-primary"), "#202522");
-  assert.equal(resolveVar("--text-secondary"), "#3f4742");
-  assert.equal(resolveVar("--text-muted"), "#69716c");
-  assert.equal(resolveVar("--text-placeholder"), "#8b938e");
+  assert.equal(resolveVar("--text-primary"), "#20201f");
+  assert.equal(resolveVar("--text-secondary"), "#52514e");
+  assert.equal(resolveVar("--text-muted"), "#6d6b67");
+  assert.equal(resolveVar("--text-placeholder"), "#a9a79f");
   assert.equal(resolveVar("--text-link"), "#3f6b4f");
   assert.equal(resolveVar("--text-success"), "#2c6e49");
   assert.equal(resolveVar("--text-warning"), "#8a6d2f");
@@ -222,9 +222,9 @@ test(".agent-markdown h1/h2 使用 heading primary；H1–H6 字号/行高/字�
 
   assert.equal(h1.color, "var(--agent-heading-fg)");
   assert.equal(h2.color, "var(--agent-heading-fg)");
-  assert.equal(resolveVar("--agent-heading-fg"), "#202522", "heading 应为 primary 深色");
+  assert.equal(resolveVar("--agent-heading-fg"), "#20201f", "heading 应为 primary 深色");
   assert.notEqual(resolveVar("--agent-heading-fg"), "#3f6b4f", "标题不得染 accent");
-  assert.equal(resolveVar("--agent-subheading-fg"), "#3f4742", "H3–H6 应为 secondary");
+  assert.equal(resolveVar("--agent-subheading-fg"), "#52514e", "H3–H6 应为 secondary");
 
   // Round10：H1–H6 引用全局整数字阶 token（22/18/16/15/14/13px），
   // 行高/字重与 round10 spec §5.5 一致；不写死 20/17/15/14px 字面量。
@@ -311,7 +311,7 @@ test("必要 helper、duration、ticker、路径至少 --text-muted，不使用 
     const m = color.match(/^var\(--([a-z0-9-]+)\)$/u);
     const resolved = m ? resolveVar(`--${m[1]}`) : color;
     assert.ok(
-      resolved === "#69716c" || contrast(resolved, "#ffffff") >= 4.5,
+      resolved === "#6d6b67" || contrast(resolved, "#ffffff") >= 4.5,
       `${label}（${resolved}）必须 ≥ muted 或对比度 ≥4.5:1`
     );
   }
@@ -426,14 +426,14 @@ test("模型设置布局：model-row 响应式 grid/minmax + min-width:0，窄�
 });
 
 // ===========================================================================
-// 8) 圆角契约：控件 10px、卡片 14px、大表面 20px，圆形/胶囊沿用独立档
+// 8) 圆角契约：控件 8px、卡片 12px、大表面 16px（2026-10-30 视觉改版），圆形/胶囊沿用独立档
 // ===========================================================================
-test("圆角按三档递增：10/14/20px，组件复用 token", () => {
+test("圆角按三档递增：8/12/16px，组件复用 token", () => {
   for (const [file, src] of [["styles.css", stylesSource], ["agent.css", agentCssSource]]) {
     const offenders = [...src.matchAll(/border-radius:\s*(1[1-9]|[2-8][0-9]|9[0-8])px/gu)].map((m) => m[0]);
     assert.equal(offenders.length, 0, `${file} 卡片圆角应引用 token：${offenders.join(", ")}`);
   }
-  for (const [token, expected] of [["--r-sm", "10px"], ["--r", "14px"], ["--r-lg", "20px"]]) {
+  for (const [token, expected] of [["--r-sm", "8px"], ["--r", "12px"], ["--r-lg", "16px"]]) {
     const value = rootTokens[token] ?? "";
     assert.equal(value, expected, `${token} 应为 ${expected}`);
   }
@@ -457,8 +457,8 @@ test("Codex 基线：Assistant 正文 regular；对话画布非纯白冷调，�
   assert.equal(manuscript["font-family"], "var(--serif)", "小说文稿使用衬线字体");
   assert.ok(parseFloat(manuscript["line-height"]) >= 2, "文稿行高不得低于 2.0");
 
-  // 对话画布（--agent-canvas → --bg）不得纯白且为冷调/中性（蓝 ≥ 红，排除泛黄纸色）；
-  // 卡片白底（--surface=#ffffff）允许；rail 仍不得纯白。
+  // 对话画布（--agent-canvas → --bg）不得纯白，且必须是低饱和中性/暖灰
+  // （2026-10-30 视觉改版：由冷灰改为暖灰，红蓝差 ≤6，排除明显黄纸色）。
   const canvasDecl = [...agentCssSource.matchAll(/--agent-canvas:\s*([^;]+);/gu)][0]?.[1] ?? "";
   assert.match(canvasDecl, /var\(--bg\)/u, "--agent-canvas 应引用 --bg");
   const bg = resolveVar("--bg");
@@ -466,11 +466,11 @@ test("Codex 基线：Assistant 正文 regular；对话画布非纯白冷调，�
   assert.match(bg, /^#[0-9a-fA-F]{6}$/u, "--bg 应是 hex primitive");
   const r = parseInt(bg.slice(1, 3), 16);
   const b = parseInt(bg.slice(5, 7), 16);
-  assert.ok(b >= r, "--bg 应为冷调或中性灰（蓝≥红）");
+  assert.ok(Math.abs(r - b) <= 6, "--bg 应为低饱和中性/暖灰（红蓝差 ≤6）");
   const rail = resolveVar("--rail");
   assert.notEqual(rail, "#ffffff", "--rail 不得纯白");
   // H1/H2 深色分级：同为深色 primary，不统一染 accent/green。
-  assert.equal(resolveVar("--agent-heading-fg"), "#202522", "标题应为深色 primary");
+  assert.equal(resolveVar("--agent-heading-fg"), "#20201f", "标题应为深色 primary");
   assert.notEqual(resolveVar("--agent-heading-fg"), resolveVar("--accent"), "标题不得染 accent");
 });
 

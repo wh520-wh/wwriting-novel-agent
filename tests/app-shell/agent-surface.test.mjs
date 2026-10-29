@@ -820,7 +820,7 @@ test("中文输入法组合态：斜杠菜单中的 Enter 与 Tab 不得选择�
   assert.equal(api.calls.filter((call) => call[0] === "submit").length, 0);
 });
 
-test("composer 是多行命令台：保留纯输入控制，发送按钮使用可访问图标", async () => {
+test("composer 是单行起手的命令台：输入后自动增高，发送按钮使用可访问图标", async () => {
   const { root, surface } = await makeSurface();
   await surface.openProject("D:\\novel");
 
@@ -829,7 +829,7 @@ test("composer 是多行命令台：保留纯输入控制，发送按钮使用�
   const send = root.querySelector('[data-testid="agent-send"]');
 
   assert.ok(shell, "输入框和工具栏应收拢在同一个命令台内");
-  assert.equal(input.rows, 3, "命令台默认应提供稳定的多行输入空间");
+  assert.equal(input.rows, 1, "命令台空态为单行，输入后由 autoGrow 增高（上限 180px）");
   assert.equal(root.querySelector('[data-testid="agent-command-trigger"]'), null, "不增加重复斜杠输入的按钮");
   assert.equal(send.getAttribute("aria-label"), "发送");
   assert.ok(send.querySelector("svg"), "发送应使用清晰图标而不是长文本按钮");
@@ -2593,7 +2593,7 @@ test("reasoning ticker：增量替换复用同一元素，高度锁定固定两�
 test("agent.css 保留内容列 token、向上菜单与工作组/动效布局", async () => {
   const css = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "agent", "agent.css"), "utf8");
   const styles = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "styles.css"), "utf8");
-  assert.match(styles, /--content-column:\s*1040px/u, "styles.css :root 独占声明 1040px 内容列（Round10 单一所有权）");
+  assert.match(styles, /--content-column:\s*760px/u, "styles.css :root 独占声明 760px 内容列（Round10 单一所有权）");
   assert.doesNotMatch(css, /--content-column\s*:/u, "agent.css 不得重新声明内容列");
   assert.match(
     css,
@@ -2631,8 +2631,8 @@ test("agent.css 保留内容列 token、向上菜单与工作组/动效布局", 
   assert.match(css, /@media\s*\(max-width:\s*560px\)[\s\S]*\.agent-queue-item\s*\{/u, "窄视口应调整排队布局避免重叠");
   assert.match(
     css,
-    /\.agent-composer-shell\s*\{[^}]*display:\s*grid[^}]*grid-template-rows:\s*minmax\(74px,\s*auto\)\s+42px[^}]*border:\s*1px\s+solid\s+var\(--agent-line\)[^}]*border-radius:\s*var\(--r-lg\)[^}]*box-shadow:\s*var\(--shadow-sm\)/u,
-    "composer 应是白底细边框圆角卡片，保留双行 grid 结构"
+    /\.agent-composer-shell\s*\{[^}]*display:\s*flex[^}]*min-height:\s*44px[^}]*border:\s*1px\s+solid\s+var\(--agent-line\)[^}]*border-radius:\s*var\(--r\)[^}]*box-shadow:\s*none/u,
+    "composer 应是细边框 12px 圆角、无阴影的 44px 单行命令台"
   );
   assert.match(
     css,
@@ -2645,17 +2645,17 @@ test("agent.css 保留内容列 token、向上菜单与工作组/动效布局", 
   assert.doesNotMatch(css, /agent-thinking-dot|agent-thinking-blink|agent-plan-mark|agent-plan-restore/u, "旧三点思考/悬浮层控件 CSS 已删除");
   assert.doesNotMatch(css, /@media\s*\(max-width:\s*720px\)/u, "旧窄窗口悬浮层降级规则已删除");
   // 工作组（Step 3/12）：details 容器 + 稳定选择器（不靠 nth-child/文案/内联 style）；
-  // Codex 改版 B-5/B-5b：无框直出，外轴走内容列 token、内容对齐阅读列 token。
+  // 2026-10-30 视觉改版：一组一卡（取代 B-5 无框），外轴走内容列 token。
   assert.match(
     css,
-    /\.agent-work-group\s*\{[^}]*width:\s*min\(100%,\s*var\(--content-column\)\)[^}]*border:\s*0[^}]*background:\s*transparent[^}]*box-shadow:\s*none/u,
-    "工作组无框直出，外轴走内容列 token"
+    /\.agent-work-group\s*\{[^}]*width:\s*min\(100%,\s*var\(--content-column\)\)[^}]*border:\s*1px solid var\(--line\)[^}]*background:\s*transparent[^}]*box-shadow:\s*none/u,
+    "工作组一组一卡，外轴走内容列 token"
   );
-  // B-5：展开态 summary 无框（无下边框）
+  // 展开态 summary 用一条细线与明细分隔（2026-10-30 取代无框）
   assert.match(
     css,
-    /\.agent-work-group\[open\]\s*>\s*summary\s*\{[^}]*border-bottom:\s*0/u,
-    "展开态 summary 不显示下边框（无框）"
+    /\.agent-work-group\[open\]\s*>\s*summary\s*\{[^}]*border-bottom:\s*1px solid var\(--line\)/u,
+    "展开态 summary 以细线与明细分隔"
   );
   // B-5b：summary 与明细内容轴与正文阅读列 token 对齐（容器仍全宽）
   assert.match(
@@ -2753,10 +2753,10 @@ test("agent.css 保留内容列 token、向上菜单与工作组/动效布局", 
 // 冻结布局约束（Task 7 Step 3）：固定宽度 + 响应式无横向溢出
 // ===========================================================================
 
-test("冻结布局约束：助手正文/工作组走轴 token / 用户消息 min(800px,100%-32px) 靠右 / ticker 2lh / 详情 320px", async () => {
+test("冻结布局约束：助手正文/工作组走轴 token / 用户消息 min(78%,560px) 靠右 / ticker 2lh / 详情 320px", async () => {
   const css = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "agent", "agent.css"), "utf8");
   assert.match(css, /\.agent-message--user\s*\{[^}]*align-self:\s*flex-end/u, "用户消息靠右");
-  assert.match(css, /max-width:\s*min\(800px,\s*calc\(100% - 32px\)\)/u, "用户消息 max-width: min(800px, calc(100% - 32px))");
+  assert.match(css, /max-width:\s*min\(78%,\s*560px\)/u, "用户消息 max-width: min(78%, 560px)");
   assert.match(css, /width:\s*min\(100%,\s*var\(--reading-column\)\)/u, "助手 Markdown width 走阅读列 token");
   assert.match(css, /width:\s*min\(100%,\s*var\(--content-column\)\)/u, "工作组 width 走内容列 token");
   assert.match(

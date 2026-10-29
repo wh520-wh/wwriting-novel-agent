@@ -78,13 +78,10 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   emptyTitle.id = "agent-empty-title";
   emptyTitle.className = "agent-empty-title";
   emptyTitle.textContent = "从一部小说开始";
-  const emptyLead = doc.createElement("p");
-  emptyLead.className = "agent-empty-lead";
-  emptyLead.textContent = "建立新的写作项目，或继续已有作品。";
   const emptyActions = doc.createElement("div");
   emptyActions.className = "agent-empty-actions";
 
-  function createEmptyAction({ testid, iconName, title, description, action }) {
+  function createEmptyAction({ testid, iconName, title, action }) {
     const button = doc.createElement("button");
     button.type = "button";
     button.className = "agent-empty-action";
@@ -97,9 +94,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     copy.className = "agent-empty-action-copy";
     const label = doc.createElement("strong");
     label.textContent = title;
-    const detail = doc.createElement("span");
-    detail.textContent = description;
-    copy.append(label, detail);
+    copy.append(label);
     button.append(actionIcon, copy, viewIcon("chevR", 16));
     button.addEventListener("click", () => actions[action]?.());
     return button;
@@ -110,18 +105,16 @@ export function createAgentView({ root, document: doc = globalThis.document, req
       testid: "agent-empty-create",
       iconName: "compose",
       title: "新建小说",
-      description: "创建一个新的写作项目",
       action: "createProject"
     }),
     createEmptyAction({
       testid: "agent-empty-open",
       iconName: "folder",
       title: "打开本地文件夹",
-      description: "继续已有的 WWriting 项目",
       action: "openProjectFolder"
     })
   );
-  emptyState.append(emptyMark, emptyTitle, emptyLead, emptyActions);
+  emptyState.append(emptyMark, emptyTitle, emptyActions);
 
   const runSection = doc.createElement("div");
   runSection.className = "agent-run";
@@ -172,7 +165,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   input.className = "agent-composer-input";
   input.dataset.testid = "agent-composer-input";
   input.placeholder = "输入消息";
-  input.rows = 3;
+  input.rows = 1;
   input.setAttribute("aria-label", "给智能体下达指令");
   input.setAttribute("aria-controls", "agent-slash-menu");
   const composerShell = doc.createElement("div");
@@ -185,8 +178,8 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   historyClearHint.dataset.testid = "agent-history-clear-hint";
   historyClearHint.textContent = "此对话已损坏";
   historyClearHint.hidden = true;
-  const composerToolbar = doc.createElement("div");
-  composerToolbar.className = "agent-composer-toolbar";
+  const composerMeta = doc.createElement("div");
+  composerMeta.className = "agent-composer-meta";
   const send = doc.createElement("button");
   send.type = "button";
   send.className = "agent-send";
@@ -198,11 +191,11 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   // 分区（菜单是 composer 内的向上浮层，不交给系统原生 select 决定方向和样式）。
   const controls = doc.createElement("div");
   controls.className = "agent-composer-controls";
-  // Task 11：上下文圆环（用量仪表）挂载在 composer 工具栏，项目打开后始终可见。
+  // Task 11：上下文圆环（用量仪表）。2026-10-30：与三控件一起移到输入框下方状态行。
   const contextRing = createContextRing({ document: doc });
-  composerToolbar.append(controls, contextRing.element, send);
-  composerShell.append(input, composerToolbar);
-  composer.append(historyClearHint, slashMenu, composerShell);
+  composerMeta.append(controls, contextRing.element);
+  composerShell.append(input, send);
+  composer.append(historyClearHint, slashMenu, composerShell, composerMeta);
 
   surface.append(conv, latestButton, composer);
   root.append(surface);
@@ -373,7 +366,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     input,
     composerShell,
     historyClearHint,
-    composerToolbar,
+    composerMeta,
     send,
     controls,
     contextRing,

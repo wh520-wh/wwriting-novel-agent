@@ -3,10 +3,11 @@
 // 冻结基线（与 docs/superpowers/plans/2026-08-09-codex-style-ui-redesign.md 对应）：
 //   - agent.css 无 raw hex（颜色一律 var(--token)）；hex 只允许在 styles.css
 //     :root 与 [data-theme="dark"] 两个 primitive 块；
-//   - 消息和状态保留 --content-column: 1040px，滚动区与 composer 全宽；
-//   - 运行区无横杠、工作项无左侧竖线；圆角遵循统一书 §7 的三档层级；
-//   - Task 3+：工作组无框直出；Task 4+：状态小条与压缩条；
-//   - Task 5+：composer 卡片化、顶栏发丝下边框、项目行圆角。
+//   - 消息和状态保留 --content-column: 760px（2026-10-30 视觉改版，原 1040px），
+//     滚动区与 composer 同轴；
+//   - 运行区无横杠、工作项无左侧竖线；圆角遵循统一书 §7 的三档层级（8/12/16）；
+//   - 工作组一组一卡（2026-10-30 取代「无框直出」）；
+//   - composer 单行化、顶栏无下边框。
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -44,7 +45,7 @@ test("基线保留：agent.css 无 raw hex、内容列/阅读列走全局 token"
   assert.ok(!/#[0-9a-fA-F]{3,8}\b/u.test(css.replace(/var\([^)]*\)/gu, "")));
   assert.match(css, /var\(--content-column\)/u);
   // Round10：全局轴 token 由 styles.css 独占声明，选择器只引用 token 名称
-  assert.match(read("src/app-shell/styles.css"), /--content-column:\s*1040px/u);
+  assert.match(read("src/app-shell/styles.css"), /--content-column:\s*760px/u);
   assert.match(read("src/app-shell/styles.css"), /--reading-column:\s*720px/u);
 });
 
@@ -54,16 +55,18 @@ test("Codex 基线：运行区无横杠、工作项无左侧竖线", () => {
   assert.ok(!/\.agent-work-item::before/u.test(css), "工作项左侧竖线必须移除");
 });
 
-test("圆角层级：styles.css 提供大表面 --r-lg 20px", () => {
-  assert.match(read("src/app-shell/styles.css"), /--r-lg:\s*20px/u);
+test("圆角层级：styles.css 提供大表面 --r-lg 16px（控件 8 / 卡片 12 / 大表面 16）", () => {
+  const css = read("src/app-shell/styles.css");
+  assert.match(css, /--r-sm:\s*8px/u);
+  assert.match(css, /--r:\s*12px/u);
+  assert.match(css, /--r-lg:\s*16px/u);
 });
 
-test("Codex 基线：工作组无框直出", () => {
+test("Codex 基线：工作组一组一卡（2026-10-30 取代无框直出）", () => {
   const css = read("src/app-shell/agent/agent.css");
   const group = cssBlock(css, ".agent-work-group");
-  assert.match(group, /border:\s*0/u);
-  assert.match(group, /border-radius:\s*0/u);
-  assert.match(group, /background:\s*transparent/u);
+  assert.match(group, /border:\s*1px solid var\(--line\)/u);
+  assert.match(group, /border-radius:\s*var\(--r\)/u);
   assert.match(group, /box-shadow:\s*none/u);
 });
 
@@ -81,17 +84,19 @@ test("Codex 基线：压缩行为细边框紧凑条", () => {
   assert.match(row, /border-radius:\s*var\(--r\)/u);
 });
 
-test("Codex 基线：composer 为白底细边框圆角卡片带轻阴影", () => {
+test("Codex 基线：composer 为细边框 12px 圆角卡片、无阴影", () => {
   const css = read("src/app-shell/agent/agent.css");
   const shell = cssBlock(css, ".agent-composer-shell");
   assert.match(shell, /border:\s*1px solid var\(--agent-line\)/u);
-  assert.match(shell, /border-radius:\s*var\(--r-lg\)/u);
-  assert.match(shell, /box-shadow:\s*var\(--shadow-sm\)/u);
+  assert.match(shell, /border-radius:\s*var\(--r\)/u);
+  assert.match(shell, /box-shadow:\s*none/u);
 });
 
-test("Codex 基线：顶栏发丝下边框、项目行圆角", () => {
+test("Codex 基线：顶栏无下边框（36px 细标题）、项目行圆角", () => {
   const css = read("src/app-shell/styles.css");
-  assert.match(cssBlock(css, ".topbar"), /border-bottom:\s*1px solid var\(--line-3\)/u);
+  const topbar = cssBlock(css, ".topbar");
+  assert.match(topbar, /border-bottom:\s*0/u, "顶栏下边框必须显式归零");
+  assert.match(topbar, /min-height:\s*36px/u);
   assert.match(cssBlock(css, ".proj"), /border-radius:\s*var\(--r\)/u);
 });
 
@@ -133,22 +138,20 @@ test("AICSS 基线：composer 扫描边框只绑提交在途，选项圆角 --r-
   assert.match(cssBlock(css, ".agent-composer-option"), /border-radius:\s*var\(--r-sm\)/u);
 });
 
-test("Round10 契约：Composer 稳定三行、send 固定 34px、历史损坏提示样式在 CSS", () => {
+test("Round10 契约：Composer 单行起手、设置项在框下、send 28px", () => {
   const css = read("src/app-shell/agent/agent.css");
-  // 三行 shell 全宽度保持（含窄屏不折叠成单行变体）
-  assert.match(cssBlock(css, ".agent-composer-shell"), /grid-template-rows:\s*minmax\(74px,\s*auto\)\s+42px/u, "composer 稳定三行");
-  // 任何响应式块都不得重置 .agent-composer-shell 的行结构（逐块解析，防跨块误匹配）
-  for (const block of mediaBlocks(css)) {
-    assert.doesNotMatch(
-      block,
-      /\.agent-composer-shell\s*\{[^}]*grid-template-rows/u,
-      "响应式块不得折叠 composer 行高"
-    );
-  }
-  // send 固定 34px（尺寸声明在第二个块；第一个块是通用 flex 基线）
-  assert.match(cssBlock(css, ".agent-send"), /width:\s*34px[^}]*height:\s*34px[^}]*border-radius:\s*var\(--r-sm\)/u, "send 固定 34px");
+  // 2026-10-30：输入框本体 44px 单行；模型/权限/思考强度移到框下 .agent-composer-meta
+  const shell = cssBlock(css, ".agent-composer-shell");
+  assert.match(shell, /display:\s*flex/u, "composer 外壳为单行 flex");
+  assert.match(shell, /min-height:\s*44px/u, "composer 空态 44px");
+  assert.match(shell, /align-items:\s*flex-end/u, "多行草稿时发送键贴底");
+  assert.match(cssBlock(css, ".agent-composer-meta"), /display:\s*flex/u, "设置项在框下独立一行");
+  const view = read("src/app-shell/agent/view.js");
+  assert.match(view, /composerShell\.append\(input, send\)/u, "输入框与发送键同在外壳内");
+  assert.match(view, /composerMeta\.append\(controls, contextRing\.element\)/u, "三个设置项与上下文环在框下");
+  // send 28px（尺寸声明在第二个块；第一个块是通用 flex 基线）
+  assert.match(cssBlock(css, ".agent-send"), /width:\s*28px[^}]*height:\s*28px[^}]*border-radius:\s*var\(--r-sm\)/u, "send 固定 28px");
   // 历史损坏提示不再用 JS 内联样式
   assert.match(cssBlock(css, ".agent-history-clear-hint"), /font-size:\s*var\(--font-xs\)/u, "history 提示样式在 CSS");
-  const view = read("src/app-shell/agent/view.js");
   assert.doesNotMatch(view, /Object\.assign\(historyClearHint\.style/u, "不得用 JS 内联样式写 history 提示");
 });

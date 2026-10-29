@@ -1,7 +1,7 @@
 // 统一 Agent 内核计划 Task 9 改写（Task 12 更新）：UI 布局契约。
 //
 // 保留的布局基线：
-//   - 滚动区/输入台全宽，消息和状态保留 1040px 内容列（agent.css）；
+//   - 滚动区全宽，消息和状态保留 760px 内容列（agent.css）；输入台与消息同轴；
 //   - composer 菜单从触发器向上浮出，并保留 16px 视口安全区（agent.css）；
 //   - 设置弹窗只暴露普通作者真正需要的写作参数、技能和项目管理（模型配置在
 //     Task 12 起迁往独立的 model-settings-page，Task 17 cutover 后弹窗不再有模型分区）；
@@ -22,9 +22,9 @@ const cssSource = await fs.readFile(path.join(srcDir, "styles.css"), "utf8");
 const agentCssSource = await fs.readFile(path.join(srcDir, "agent", "agent.css"), "utf8");
 const settingsSource = await fs.readFile(path.join(srcDir, "settings-modal.js"), "utf8");
 
-test("内容列：消息和状态封顶 1040px，滚动区与输入台铺满画布", () => {
-  assert.match(cssSource, /--content-column:\s*1040px/u, "styles.css 应定义 1040px 内容列变量");
-  assert.doesNotMatch(agentCssSource, /--content-column:\s*1040px/u, "agent.css 只引用不重声明内容列变量（token 所有权在 styles.css）");
+test("内容列：消息和状态封顶 760px，输入台与消息同轴", () => {
+  assert.match(cssSource, /--content-column:\s*760px/u, "styles.css 应定义 760px 内容列变量");
+  assert.doesNotMatch(agentCssSource, /--content-column:\s*760px/u, "agent.css 只引用不重声明内容列变量（token 所有权在 styles.css）");
   assert.match(
     agentCssSource,
     /\.agent-messages,\s*\.agent-run,\s*\.agent-queue\s*\{[^}]*width:\s*min\(100%,\s*var\(--content-column\)\)/u,
@@ -33,7 +33,7 @@ test("内容列：消息和状态封顶 1040px，滚动区与输入台铺满画�
   assert.match(
     agentCssSource,
     /\.agent-conversation,\s*\.agent-composer\s*\{[^}]*width:\s*100%/u,
-    "滚动区与输入台全宽，避免右侧空槽"
+    "滚动区与输入台容器全宽，输入台内边距再对齐内容列"
   );
 });
 
@@ -112,8 +112,8 @@ test("对话控制面提供即时反馈、清晰材料层与完整无障碍降�
   );
   assert.match(
     agentCssSource,
-    /\.agent-composer-shell\s*\{[^}]*border-radius:\s*var\(--r-lg\)[^}]*backdrop-filter:[^}]*box-shadow:\s*var\(--shadow-sm\)/u,
-    "composer 应是带有层次感的圆角卡片材料层"
+    /\.agent-composer-shell\s*\{[^}]*border:\s*1px solid var\(--agent-line\)[^}]*border-radius:\s*var\(--r\)[^}]*box-shadow:\s*none/u,
+    "composer 是细边框 12px 圆角、无阴影的命令台"
   );
   assert.match(
     agentCssSource,
@@ -134,8 +134,8 @@ test("对话控制面提供即时反馈、清晰材料层与完整无障碍降�
 test("主入口使用轻表面，次级操作融入背景", () => {
   assert.match(
     cssSource,
-    /\.new-btn\s*\{[^}]*background:\s*var\(--surface\);[^}]*border:\s*1px solid var\(--line\);/u,
-    "新建入口应以浅色表面和细边界区分于次级导航"
+    /\.new-btn\s*\{[^}]*background:\s*var\(--fill-1\);[^}]*border:\s*0;/u,
+    "新建入口用一档填充区分，不描边"
   );
   assert.match(
     cssSource,
@@ -144,13 +144,13 @@ test("主入口使用轻表面，次级操作融入背景", () => {
   );
   assert.match(
     agentCssSource,
-    /--agent-user-bg:\s*var\(--surface-3\);/u,
-    "用户消息应使用中性表面（引用全局 surface-3 primitive）"
+    /--agent-user-bg:\s*var\(--fill-1\);/u,
+    "用户消息应使用一档填充（引用全局 fill-1 token）"
   );
   assert.match(
     agentCssSource,
-    /--agent-user-ink:\s*var\(--btn\);/u,
-    "用户消息文字应引用全局 ink primitive，不硬编码色值"
+    /--agent-user-ink:\s*var\(--ink\);/u,
+    "用户消息文字应引用全局 ink token，不硬编码色值"
   );
   assert.match(
     cssSource,
@@ -174,8 +174,8 @@ test("主入口使用轻表面，次级操作融入背景", () => {
 // ===========================================================================
 
 test("冻结布局约束：390/768/1280 无横向溢出（百分比优先 + 固定上限）", () => {
-  // 百分比项不超过容器宽度；正文 720px、消息列 1040px 只在宽屏封顶。
-  assert.match(agentCssSource, /max-width:\s*min\(800px,\s*calc\(100% - 32px\)\)/u, "用户消息：封顶 800px，留 32px 边距");
+  // 百分比项不超过容器宽度；正文 720px、消息列 760px 只在宽屏封顶。
+  assert.match(agentCssSource, /max-width:\s*min\(78%,\s*560px\)/u, "用户消息：比例上限 78% / 560px");
   assert.match(
     agentCssSource,
     /\.agent-message-text\.agent-markdown\s*\{[^}]*width:\s*min\(100%,\s*var\(--reading-column\)\)/u,

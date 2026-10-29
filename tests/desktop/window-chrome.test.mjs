@@ -15,11 +15,11 @@ test("Windows uses an integrated title bar while other platforms keep native def
   assert.deepEqual(desktopWindowChrome("linux"), {});
   assert.deepEqual(desktopWindowChrome("win32", false), {
     titleBarStyle: "hidden",
-    titleBarOverlay: { color: "#fafbfc", symbolColor: "#202522", height: 34 }
+    titleBarOverlay: { color: "#fcfcfb", symbolColor: "#20201f", height: 34 }
   });
   assert.deepEqual(desktopWindowChrome("win32", true), {
     titleBarStyle: "hidden",
-    titleBarOverlay: { color: "#16181a", symbolColor: "#eef2ef", height: 34 }
+    titleBarOverlay: { color: "#151515", symbolColor: "#f0efec", height: 34 }
   });
 });
 

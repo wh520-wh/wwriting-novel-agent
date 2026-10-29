@@ -126,7 +126,7 @@ test("api-client.js exports 通用 helper 且无旧 chat helper", () => {
   assert.match(apiClientSource, /error\.action\s*=/);
 });
 
-test("Task 12 静态契约：quick rail 删除、无框时间线、1040px 主轴（token）、/review 下线", () => {
+test("Task 12 静态契约：quick rail 删除、无框时间线、760px 主轴（token）、/review 下线", () => {
   // brief Step 1 verbatim 断言：
   assert.doesNotMatch(indexHtmlSource, /id="quick-rail"|id="qr-collapsed"/u, "quick rail 与折叠按钮应整体删除");
   assert.doesNotMatch(appSource, /renderQuickRail|bindQuickRailKeys/u, "app.js 不得引用 quick rail 渲染/键盘绑定");
@@ -137,7 +137,7 @@ test("Task 12 静态契约：quick rail 删除、无框时间线、1040px 主轴
     "时间线容器不得使用 surface/accent/green/red 底色"
   );
   // Round10：主内容轴 token 由 styles.css :root 独占声明，agent.css 只引用。
-  assert.match(stylesSource, /--content-column:\s*1040px/u, "styles.css :root 应声明 1040px 内容列 token");
+  assert.match(stylesSource, /--content-column:\s*760px/u, "styles.css :root 应声明 760px 内容列 token");
   assert.match(agentCssSource, /var\(--content-column\)/u, "agent.css 应引用内容列 token");
   assert.doesNotMatch(agentCssSource, /--content-column\s*:/u, "agent.css 不得重新声明内容列");
 });
