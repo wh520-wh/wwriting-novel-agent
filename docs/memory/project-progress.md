@@ -11,6 +11,7 @@
 
 | 入口 | 最近一次验证 | 结果 | 依据与边界 |
 |---|---|---|---|
+| v0.5.5 安装包构建（Claude 化 UI 全量改动后） | 2026-10-30 | 构建 + 产物检查 + 打包目录冒烟 全通过 | `ELECTRON_MIRROR=... npx electron-builder --win nsis`（未设 ELECTRON_BUILDER_CACHE）；产物 `dist-desktop/WWriting Novel Agent-0.5.5-Setup.exe` 97.3 MiB（101,974,949 B），`verify:installer` 通过；品牌信息 ProductName/FileDescription=`WWriting Novel Agent`、CompanyName=`WWriting`、FileVersion=`0.5.5`；`verify:packaged-dir` `ok:true`（须以 `env -u ELECTRON_RUN_AS_NODE` 运行，否则 packaged exe 被当成 Node 跑、退出码 9）；未升版本、未发 Release |
 | 视觉改版收尾：门禁全绿 + 陈旧断言订正 | 2026-10-30 | 2096/2096 + 36/36 + exit 0 + ok + 22/22 | `npm test` 分量跑（app-shell 696 / 非桌面 1360 / acceptance 34 / desktop 6）、`verify:unified-agent` 36/36 exit 0（场景 25 的 1040px 陈旧断言已订正为 760px）、`verify:desktop-shell` exit 0、`verify:app-clickability` `ok:true`、`sim:user-flow` 22/22；`npm run verify:app-shell` 已在 round22 随旧检查器删除（欠账 21-7 关闭），当前无此脚本 |
 | 品牌色换 Claude 蓝 + 组件统一（按钮档位/控件高度/模型区扁平） | 2026-10-30 | 2096/2096，exit 0；clickability ok | app-shell 696、非桌面 1360、acceptance 34、desktop 6；`scripts/verify-app-clickability.cjs` 返回 `ok:true`；`.local/ui-redesign-review.cjs` 出深浅两套全站截图（`artifacts/ui-redesign-2026-10-30/after/`）；accent 取 blue-500 `#256abf`（450 在浅蓝底上 3.85:1 过不了 4.5 契约），主按钮/发送键/链接/焦点环随动；不代表全量 `npm test` |
 | 全站换样式（圆角 8/12/16/24 + 控件 30/32/36 + 设置/抽屉/侧栏收口） | 2026-10-30 | 2096/2096，exit 0 | app-shell 696、非桌面 1360、acceptance 34、desktop 6；`.local/ui-redesign-review.cjs` 出深浅两套全站截图（`artifacts/ui-redesign-2026-10-30/after/`），1440/1280/1024/768/391 无横向溢出且材质断言通过；不代表全量 `npm test` |
