@@ -1165,30 +1165,30 @@ step("场景 24 · 活动合并与私有推理排除");
 }
 
 // ---------------------------------------------------------------------------
-// 场景 25：共享 1040px 内容列与统一 Composer 菜单视口钳制
+// 场景 25：共享 760px 内容列与统一 Composer 菜单视口钳制
 // ---------------------------------------------------------------------------
-step("场景 25 · 1040px 内容列与统一菜单视口钳制");
+step("场景 25 · 760px 内容列与统一菜单视口钳制");
 {
   const agentCssUrl = new URL("../src/app-shell/agent/agent.css", import.meta.url);
   const stylesCssUrl = new URL("../src/app-shell/styles.css", import.meta.url);
   const agentCss = await fs.readFile(agentCssUrl, "utf8");
   const stylesCss = await fs.readFile(stylesCssUrl, "utf8");
-  assert.ok(stylesCss.includes("--content-column: 1040px"), "styles.css 应定义 1040px 内容列变量");
+  assert.ok(stylesCss.includes("--content-column: 760px"), "styles.css 应定义 760px 内容列变量（§7.3）");
   assert.ok(agentCss.includes("var(--content-column)"), "agent.css 应引用全局内容列变量");
-  assert.ok(!agentCss.includes("--content-column: 1040px"), "agent.css 不得重复定义内容列变量");
+  assert.ok(!agentCss.includes("--content-column: 760px"), "agent.css 不得重复定义内容列变量");
   assert.ok(
-    /\.agent-conversation[\s\S]*max-width:\s*var\(--content-column\)/u.test(agentCss),
-    "对话应共享 max-width: var(--content-column)"
+    /\.agent-messages,[\s\S]{0,120}width:\s*min\(100%,\s*var\(--content-column\)\)[\s\S]{0,80}margin-inline:\s*auto/u.test(agentCss),
+    "消息列应共享 width: min(100%, var(--content-column)) 并居中"
   );
   assert.ok(
-    /\.agent-composer[\s\S]*max-width:\s*var\(--content-column\)/u.test(agentCss),
-    "composer 应共享 max-width: var(--content-column)"
+    /\.agent-composer[\s\S]{0,240}calc\(\(100% - var\(--content-column[^)]*\)\) \/ 2\)/u.test(agentCss),
+    "composer 内边距应与内容列同轴（calc((100% - content-column)/2)）"
   );
   assert.ok(agentCss.includes("min(320px, calc(100vw - 32px))"), "模型菜单应保留 16px 视口安全区");
   assert.ok(agentCss.includes("bottom: calc(100% + 7px)"), "统一菜单应从 composer 向上展开");
   assert.ok(!agentCss.includes(".model-popover") && !agentCss.includes(".mode-popover"), "旧菜单实现不得残留");
   assert.ok(agentCss.includes("overflow-wrap: anywhere"), "长模型名称应允许任意位置换行");
-  record("1040px 内容列与统一菜单钳制：CSS 基线保留", true, "agent.css + styles.css");
+  record("760px 内容列与统一菜单钳制：CSS 基线保留", true, "agent.css + styles.css");
 }
 
 // ---------------------------------------------------------------------------
