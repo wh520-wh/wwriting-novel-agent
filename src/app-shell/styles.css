@@ -6,26 +6,27 @@
   color-scheme: light;
 
   /* 画布、侧栏与抬升表面保持相邻明度，正文优先。暖灰阶，无蓝绿倾向。 */
-  --bg: #fcfcfb;
+  --bg: #f9f9f7;
   --rail: #f6f6f4;
   --rail-2: #eceae6;
   --surface: #ffffff;
   --surface-2: #f9f9f7;
   --surface-3: #f0efec;
 
-  /* ink */
-  --ink: #20201f;
+  /* ink — 对齐 Claude --cds-neutral 阶梯：primary = neutral-900，secondary = 600，muted = 400 */
+  --ink: #0b0b0b;
   --ink-2: #52514e;
   --muted: #6d6b67;
   --faint: #a9a79f;
   --ghost: #c3c2b7;
 
-  /* lines — 只有一条线：--line；其余为同值别名，禁止再分级 */
-  --line: #e6e5e1;
+  /* lines — 只有一条线：--line；其余为同值别名，禁止再分级。
+     口径取自 Claude --cds-alpha-2：当前文字色 10% 叠色，深浅主题同式。 */
+  --line: color-mix(in srgb, var(--ink) 10%, transparent);
   --line-2: var(--line);
   --line-3: var(--line);
   --line-hover: var(--line);
-  --hover: #f0efec;
+  --hover: color-mix(in srgb, var(--ink) 5%, transparent);
 
   /* 填充三档：同一 ink 叠 alpha，不另造灰 */
   --fill-1: color-mix(in srgb, var(--ink) 5%, transparent);
@@ -69,9 +70,12 @@
   --ink-shadow: 24, 32, 27;   /* 阴影基色，rgba(var(--ink-shadow), α) 用 */
   --ink-scrim: 28, 26, 22;    /* 遮罩基色，rgba(var(--ink-scrim), α) 用 */
 
-  --r-sm: 8px;
-  --r: 12px;
-  --r-lg: 16px;
+  /* 圆角四档，口径取自 Claude --cds-radius--sm/lg 与 --cds-radius(1.5rem)：
+     控件 5 / 卡片 8 / 大表面 12 / 消息气泡 24。 */
+  --r-sm: 5px;
+  --r: 8px;
+  --r-lg: 12px;
+  --r-bubble: 24px;
   --r-pill: 999px;
 
   /* 折叠箭头：24 网格 SVG 走 mask，颜色由 background-color 提供（可随主题着色、任意缩放不糊）。
@@ -169,17 +173,17 @@
   --surface-2: #232322;
   --surface-3: #2c2c2a;
 
-  --ink: #f0efec;
-  --ink-2: #b4b3a8;
+  --ink: #ffffff;
+  --ink-2: #a5a49a;
   --muted: #898781;
   --faint: #6f6d68;
   --ghost: #55534e;
 
-  --line: #302f2d;
+  --line: color-mix(in srgb, var(--ink) 10%, transparent);
   --line-2: var(--line);
   --line-3: var(--line);
   --line-hover: var(--line);
-  --hover: #262624;
+  --hover: color-mix(in srgb, var(--ink) 6%, transparent);
 
   --accent: #8fb08f;
   --accent-soft: #263026;

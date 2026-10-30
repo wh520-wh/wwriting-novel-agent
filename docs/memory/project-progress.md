@@ -11,6 +11,7 @@
 
 | 入口 | 最近一次验证 | 结果 | 依据与边界 |
 |---|---|---|---|
+| Claude DOM 对齐（对话区结构 + 全站 token） | 2026-10-30 | 2096/2096，exit 0 | app-shell 696、非桌面 1360、acceptance 34、desktop 6；`.local/fade-probe.cjs` 实测滚动渐隐三态（顶 `bottom` / 中 `both` / 底 `top`），截图 `artifacts/ui-redesign-2026-10-30/after/`；口径来自 `D:\claude逆向` 的 `ion-dist` token（灰阶 0–900、`--cds-radius` 5/7/24、气泡 16/12 + 472px、`--cds-message-actions-opacity`、`--cds-scroll-fade-size` 28px）；不代表全量 `npm test` |
 | 上下文环内百分比溢出修复，app-shell 全量 | 2026-10-30 | 696/696，exit 0 | `node --test "tests/app-shell/*.test.mjs"`；`.local/ring-gallery-shot.cjs` 用真实 CSS 渲染 7% / 21% / 100% 三档复核文字均在环内（余量 6.3 / 3.7 / 1.2px），环径 24→28px、环内字号 12→9px，截图在 `artifacts/ui-bug-2026-10-30/`；不代表全量 |
 | 桌面全量 `npm test`，v0.5.5 本地更新前 | 2026-10-14 | 2096/2096，exit 0 | `.local/reading-update-full-tests.log`；包含本轮跟读、等待、选区/键盘、操作焦点、重复渲染、复制反馈和聊天切换回归；正常本机权限，不包含 CLI |
 | v0.5.5 Windows x64 安装器 / 本地可运行包更新 | 2026-10-14 | 构建、产物检查及启动冒烟 exit 0 | `npm run package:installer`、`npm run verify:installer`、`npm run verify:packaged-dir`、`.local/reading-update-artifact-check.cjs`；对应 `.local/reading-update-build-installer.log`、`.local/reading-update-installer-check.log`、`.local/reading-update-packaged-smoke.log` 与 `.local/reading-update-artifact-check.json`；包内版本与四个改动源码逐字节匹配，更新工作区 `dist-desktop/win-unpacked`，未发现已登记安装版或快捷方式，未执行安装器安装或上传 Release 附件 |

@@ -2631,7 +2631,7 @@ test("agent.css 保留内容列 token、向上菜单与工作组/动效布局", 
   assert.match(css, /@media\s*\(max-width:\s*560px\)[\s\S]*\.agent-queue-item\s*\{/u, "窄视口应调整排队布局避免重叠");
   assert.match(
     css,
-    /\.agent-composer-shell\s*\{[^}]*display:\s*flex[^}]*min-height:\s*44px[^}]*border:\s*1px\s+solid\s+var\(--agent-line\)[^}]*border-radius:\s*var\(--r\)[^}]*box-shadow:\s*none/u,
+    /\.agent-composer-shell\s*\{[^}]*display:\s*flex[^}]*min-height:\s*44px[^}]*border:\s*1px\s+solid\s+var\(--agent-line\)[^}]*border-radius:\s*var\(--r-lg\)[^}]*box-shadow:\s*none/u,
     "composer 应是细边框 12px 圆角、无阴影的 44px 单行命令台"
   );
   assert.match(
@@ -2753,10 +2753,10 @@ test("agent.css 保留内容列 token、向上菜单与工作组/动效布局", 
 // 冻结布局约束（Task 7 Step 3）：固定宽度 + 响应式无横向溢出
 // ===========================================================================
 
-test("冻结布局约束：助手正文/工作组走轴 token / 用户消息 min(78%,560px) 靠右 / ticker 2lh / 详情 320px", async () => {
+test("冻结布局约束：助手正文/工作组走轴 token / 用户消息 min(85%,472px) 靠右 / ticker 2lh / 详情 320px", async () => {
   const css = await fs.readFile(path.join(here, "..", "..", "src", "app-shell", "agent", "agent.css"), "utf8");
   assert.match(css, /\.agent-message--user\s*\{[^}]*align-self:\s*flex-end/u, "用户消息靠右");
-  assert.match(css, /max-width:\s*min\(78%,\s*560px\)/u, "用户消息 max-width: min(78%, 560px)");
+  assert.match(css, /max-width:\s*min\(85%,\s*472px\)/u, "用户消息 max-width: min(85%, 472px)");
   assert.match(css, /width:\s*min\(100%,\s*var\(--reading-column\)\)/u, "助手 Markdown width 走阅读列 token");
   assert.match(css, /width:\s*min\(100%,\s*var\(--content-column\)\)/u, "工作组 width 走内容列 token");
   assert.match(

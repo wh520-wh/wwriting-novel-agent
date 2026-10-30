@@ -42,6 +42,18 @@
   scrollbar-gutter: stable;
 }
 
+/* 滚动渐隐（口径照 Claude --cds-scroll-fade-size: 28px）：只有被内容顶住的那一侧才淡出，
+   静止/到顶/到底都不淡，避免常态发虚。状态由 view.js 按 scrollTop 写 data-fade。 */
+.agent-conversation[data-fade="top"] {
+  mask-image: linear-gradient(to bottom, transparent 0, black 28px);
+}
+.agent-conversation[data-fade="bottom"] {
+  mask-image: linear-gradient(to top, transparent 0, black 28px);
+}
+.agent-conversation[data-fade="both"] {
+  mask-image: linear-gradient(to bottom, transparent 0, black 28px, black calc(100% - 28px), transparent 100%);
+}
+
 /* 「回到最新」：位于滚动区与 composer 之间，始终不覆盖消息内容。 */
 .agent-scroll-latest {
   align-self: flex-end;
@@ -109,7 +121,7 @@
   padding: 0 6px 0 0;
   overflow: visible;
   border: 1px solid var(--agent-line);
-  border-radius: var(--r);
+  border-radius: var(--r-lg);
   background: var(--surface);
   backdrop-filter: none;
   box-shadow: none;
@@ -467,7 +479,8 @@
 
 .agent-message--user {
   align-self: flex-end;
-  max-width: min(78%, 560px); /* 用户气泡：比例上限，靠右 */
+  /* 用户气泡：口径照 Claude --cds-message-bubble-measure = min(85%, 29.5rem) */
+  max-width: min(85%, 472px);
 }
 
 .agent-message--assistant {
@@ -479,7 +492,24 @@
 
 .agent-message--streamed { animation: none; }
 
-.agent-message-actions { display: flex; align-items: center; gap: 4px; min-height: 32px; margin-top: 6px; }
+.agent-message-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  margin-top: 6px;
+  /* 口径照 Claude --cds-message-actions-opacity：静止不可见，悬停/键盘聚焦才浮出。
+     按钮仍可 Tab 到达（opacity 不影响可聚焦），focus-within 即刻显形。 */
+  opacity: 0;
+  transition: opacity var(--motion-hover) var(--ease-out);
+}
+.agent-message--assistant:hover .agent-message-actions,
+.agent-message--assistant:focus-within .agent-message-actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .agent-message-actions { opacity: 1; }
+}
 .agent-message-action { display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text-muted); cursor: pointer; transition: color 120ms ease, background 120ms ease; }
 .agent-message-action:hover:not(:disabled), .agent-message-action:focus-visible { color: var(--agent-ink); background: var(--hover); }
 .agent-message-action:focus-visible { outline: 2px solid var(--agent-accent); outline-offset: 2px; }
@@ -494,10 +524,11 @@
 .manuscript-words[hidden] { display: none; }
 
 .agent-message-text {
-  padding: 10px 14px;
-  border-radius: var(--r);
+  /* 气泡口径照 Claude：--cds-message-bubble-pad-x/y = 16/12，圆角 --cds-radius = 24 */
+  padding: 12px 16px;
+  border-radius: var(--r-bubble);
   font-size: var(--font-md);
-  line-height: 1.7;
+  line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -510,7 +541,7 @@
 }
 
 .agent-message--assistant .agent-message-text {
-  padding: 3px 2px;
+  padding: 0;
   background: transparent;
   border: 0;
   color: var(--agent-ink);

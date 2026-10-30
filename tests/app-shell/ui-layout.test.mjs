@@ -112,7 +112,7 @@ test("对话控制面提供即时反馈、清晰材料层与完整无障碍降�
   );
   assert.match(
     agentCssSource,
-    /\.agent-composer-shell\s*\{[^}]*border:\s*1px solid var\(--agent-line\)[^}]*border-radius:\s*var\(--r\)[^}]*box-shadow:\s*none/u,
+    /\.agent-composer-shell\s*\{[^}]*border:\s*1px solid var\(--agent-line\)[^}]*border-radius:\s*var\(--r-lg\)[^}]*box-shadow:\s*none/u,
     "composer 是细边框 12px 圆角、无阴影的命令台"
   );
   assert.match(
@@ -175,7 +175,7 @@ test("主入口使用轻表面，次级操作融入背景", () => {
 
 test("冻结布局约束：390/768/1280 无横向溢出（百分比优先 + 固定上限）", () => {
   // 百分比项不超过容器宽度；正文 720px、消息列 760px 只在宽屏封顶。
-  assert.match(agentCssSource, /max-width:\s*min\(78%,\s*560px\)/u, "用户消息：比例上限 78% / 560px");
+  assert.match(agentCssSource, /max-width:\s*min\(85%,\s*472px\)/u, "用户消息：比例上限 85% / 472px");
   assert.match(
     agentCssSource,
     /\.agent-message-text\.agent-markdown\s*\{[^}]*width:\s*min\(100%,\s*var\(--reading-column\)\)/u,

@@ -328,10 +328,20 @@ export function createAgentView({ root, document: doc = globalThis.document, req
   // 用户滚动事件是 follow 状态的唯一来源；渲染后不再重新测量 isNearBottom()，
   // 否则内容高度变化会误判并把滚动抢回底部，打断正在阅读更早内容的用户。
   //（距离测量/落底/前置分页/锚点恢复/历史缺口提示已迁 view/timeline.mjs。）
+  // 滚动渐隐：只有被内容顶住的那一侧淡出（Claude --cds-scroll-fade-size: 28px）。
+  // 状态写在 data-fade 上，CSS 只负责画；到顶/到底/内容不足时都不淡。
+  function syncScrollFade() {
+    const atTop = Number(conv.scrollTop ?? 0) <= 2;
+    const atBottom = timeline.distanceFromBottom(conv) <= 2;
+    const next = atTop ? (atBottom ? "none" : "bottom") : atBottom ? "top" : "both";
+    if (conv.dataset.fade !== next) conv.dataset.fade = next;
+  }
+
   conv.addEventListener("scroll", () => {
     followLatest = timeline.distanceFromBottom(conv) <= SCROLL_THRESHOLD;
     latestButton.hidden = followLatest;
     timeline.maybeLoadEarlier();
+    syncScrollFade();
   });
 
   // ---- 外部链接：交给系统默认浏览器（markdown-lite 公共委托，对话与抽屉共用）---
@@ -470,6 +480,7 @@ export function createAgentView({ root, document: doc = globalThis.document, req
     cards.syncQueue(state);
     composerView.syncComposer(state);
     if (anchor?.isConnected) conv.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+    syncScrollFade();
   }
 
   function setLoadingEarlier(enabled) {

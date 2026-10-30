@@ -177,7 +177,7 @@ test("三层 token 完整存在：primitive → semantic → component，dark �
     assert.ok(token in rootTokens, `styles.css :root 应声明 ${token}`);
   }
   // semantic 映射到现有 primitive（冻结契约，不私造同义变量）
-  assert.equal(resolveVar("--text-primary"), "#20201f");
+  assert.equal(resolveVar("--text-primary"), "#0b0b0b");
   assert.equal(resolveVar("--text-secondary"), "#52514e");
   assert.equal(resolveVar("--text-muted"), "#6d6b67");
   assert.equal(resolveVar("--text-placeholder"), "#a9a79f");
@@ -222,7 +222,7 @@ test(".agent-markdown h1/h2 使用 heading primary；H1–H6 字号/行高/字�
 
   assert.equal(h1.color, "var(--agent-heading-fg)");
   assert.equal(h2.color, "var(--agent-heading-fg)");
-  assert.equal(resolveVar("--agent-heading-fg"), "#20201f", "heading 应为 primary 深色");
+  assert.equal(resolveVar("--agent-heading-fg"), "#0b0b0b", "heading 应为 primary 深色");
   assert.notEqual(resolveVar("--agent-heading-fg"), "#3f6b4f", "标题不得染 accent");
   assert.equal(resolveVar("--agent-subheading-fg"), "#52514e", "H3–H6 应为 secondary");
 
@@ -426,14 +426,14 @@ test("模型设置布局：model-row 响应式 grid/minmax + min-width:0，窄�
 });
 
 // ===========================================================================
-// 8) 圆角契约：控件 8px、卡片 12px、大表面 16px（2026-10-30 视觉改版），圆形/胶囊沿用独立档
+// 8) 圆角契约：控件 5px、卡片 8px、大表面 12px、消息气泡 24px（口径取自 Claude --cds-radius），圆形/胶囊沿用独立档
 // ===========================================================================
-test("圆角按三档递增：8/12/16px，组件复用 token", () => {
+test("圆角按四档递增：5/8/12/24px，组件复用 token", () => {
   for (const [file, src] of [["styles.css", stylesSource], ["agent.css", agentCssSource]]) {
     const offenders = [...src.matchAll(/border-radius:\s*(1[1-9]|[2-8][0-9]|9[0-8])px/gu)].map((m) => m[0]);
     assert.equal(offenders.length, 0, `${file} 卡片圆角应引用 token：${offenders.join(", ")}`);
   }
-  for (const [token, expected] of [["--r-sm", "8px"], ["--r", "12px"], ["--r-lg", "16px"]]) {
+  for (const [token, expected] of [["--r-sm", "5px"], ["--r", "8px"], ["--r-lg", "12px"], ["--r-bubble", "24px"]]) {
     const value = rootTokens[token] ?? "";
     assert.equal(value, expected, `${token} 应为 ${expected}`);
   }
@@ -470,7 +470,7 @@ test("Codex 基线：Assistant 正文 regular；对话画布非纯白冷调，�
   const rail = resolveVar("--rail");
   assert.notEqual(rail, "#ffffff", "--rail 不得纯白");
   // H1/H2 深色分级：同为深色 primary，不统一染 accent/green。
-  assert.equal(resolveVar("--agent-heading-fg"), "#20201f", "标题应为深色 primary");
+  assert.equal(resolveVar("--agent-heading-fg"), "#0b0b0b", "标题应为深色 primary");
   assert.notEqual(resolveVar("--agent-heading-fg"), resolveVar("--accent"), "标题不得染 accent");
 });
 
