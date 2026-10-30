@@ -2657,11 +2657,12 @@ test("agent.css 保留内容列 token、向上菜单与工作组/动效布局", 
     /\.agent-work-group\[open\]\s*>\s*summary\s*\{[^}]*border-bottom:\s*1px solid var\(--line\)/u,
     "展开态 summary 以细线与明细分隔"
   );
-  // B-5b：summary 与明细内容轴与正文阅读列 token 对齐（容器仍全宽）
+  // B-5b（2026-10-30 修订）：summary 不再收窄到阅读列 —— 760 卡里限到 720 会留 40px
+  // 右侧缝，悬停底色和展开分隔线都断开；改为铺满卡片，阅读轴由 padding 提供。
   assert.match(
     css,
-    /\.agent-work-group\s*>\s*summary\s*\{[^}]*max-width:\s*var\(--reading-column\)/u,
-    "工作组 summary 内容轴与正文阅读列对齐"
+    /\.agent-work-group\s*>\s*summary\s*\{[^}]*width:\s*100%/u,
+    "工作组 summary 应铺满卡片（不得再收窄到阅读列）"
   );
   assert.match(
     css,

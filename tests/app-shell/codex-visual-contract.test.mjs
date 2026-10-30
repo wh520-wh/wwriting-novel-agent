@@ -69,6 +69,11 @@ test("Codex 基线：工作组一组一卡（2026-10-30 取代无框直出）", 
   assert.match(group, /border:\s*1px solid var\(--line\)/u);
   assert.match(group, /border-radius:\s*var\(--r\)/u);
   assert.match(group, /box-shadow:\s*none/u);
+  // 卡头必须铺满卡片：曾把 summary 限到 --reading-column(720) 比卡宽(760)窄 40px，
+  // 悬停底色与展开分隔线都在右侧断开，露出一条缝和卡右边框（2026-10-30 修复）。
+  const summary = cssBlock(css, ".agent-work-group > summary");
+  assert.ok(!/max-width/u.test(summary), "卡头不得再收窄到阅读轴，否则悬停底色右侧留缝");
+  assert.match(summary, /width:\s*100%/u, "卡头应铺满卡片宽度");
 });
 
 test("Codex 基线：状态行是紧凑小条（无全宽边框）", () => {

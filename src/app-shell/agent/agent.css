@@ -821,7 +821,8 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  max-width: var(--reading-column);
+  /* 卡头必须铺满卡片：原先限到 --reading-column(720) 比卡宽(760)窄 40px，
+     悬停底色和下边框都在右侧断开，露出一条缝 + 卡右边框。 */
   min-height: 32px;
   margin-inline: 0;
   padding: 6px 12px;          /* 摘要与子项共享同一阅读轴内边距 */
