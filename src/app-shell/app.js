@@ -5,7 +5,7 @@
 import { motion } from "./motion-runtime.js";
 import { getJson, postJson, withProjectScope } from "./api-client.js";
 import { pathBaseName, pathEquals } from "./utils.js";
-import { icon } from "./icons.js";
+import { hydrateIcons, icon } from "./icons.js";
 import { focusTrap, createToaster } from "./dom-kit.js";
 import { createDrawerPanels } from "./drawer-panels.js";
 import { createSettingsModal } from "./settings-modal.js";
@@ -1044,5 +1044,9 @@ export async function bootApp(root = document) {
   await loadAll();
 
 }
+
+// index.html 里的静态图标以 <span data-icon> 占位，启动时统一换成 icons.js 的几何，
+// 保证静态界面与动态渲染只维护一份 SVG。
+hydrateIcons(document);
 
 bootApp(document);

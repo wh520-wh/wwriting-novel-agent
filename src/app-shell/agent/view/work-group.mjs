@@ -18,7 +18,7 @@
 import { getActiveRun, isRunActive, TERMINAL_RUN_STATUSES } from "../state.js";
 import { formatDuration, groupStatusText, orderedWorkItems, visibleLiveTargets } from "../work-items.mjs";
 import { createReasoningTicker } from "../reasoning-ticker.mjs";
-import { taskIcon } from "../../components/task-icons.mjs";
+import { searchGlobeMarkup, taskIcon } from "../../icons.js";
 
 // 运行中耗时唯一数据源：工作组投影时钟（与终态 Task 15 同源，journal 同算法）。
 // activeSince 是事件 at 的 ISO 字符串；waiting_user/终态时 activeSince 为 null，
@@ -64,21 +64,8 @@ const DURATION_ACTIVE_STATUSES = new Set(["running", "interrupting", "stopping"]
 // AICSS web-search 特化渲染：查询 shimmer 头 + 来源列表（globe 旋转 → 逐项勾选）。
 // 来源数据由未来搜索工具在 tool_call_completed.payload.sources 提供；
 // 无 sources 时列表隐藏，行仍以「正在搜索/已搜索」标签呈现。
-const SEARCH_GLOBE_VALUES = [
-  "M6.057 11.565 C2.081 11.565 0.371 8.159 0.371 5.964 C0.371 3.642 2.152 0.329 6.05 0.329",
-  "M6.012 11.55 C4.575 10.496 3.333 8.116 3.321 5.964 C3.307 3.399 4.974 0.977 6.012 0.329",
-  "M6.012 11.55 C7.211 10.781 8.715 8.287 8.715 5.964 C8.715 3.399 7.24 1.233 6.012 0.329",
-  "M6.012 11.55 C9.677 11.55 11.65 8.487 11.65 5.964 C11.65 3.499 9.748 0.329 6.012 0.329",
-  "M6.057 11.565 C2.081 11.565 0.371 8.159 0.371 5.964 C0.371 3.642 2.152 0.329 6.05 0.329"
-].join(";");
-const SEARCH_GLOBE_BEGINS = ["0s", "-1.2s", "-2.4s", "-3.6s", "-4.8s", "-6s"];
-const SEARCH_GLOBE_SVG = (() => {
-  const first = SEARCH_GLOBE_VALUES.split(";")[0];
-  const paths = SEARCH_GLOBE_BEGINS.map((begin) =>
-    `<path d="${first}" opacity="0"><animate attributeName="d" dur="7.2s" begin="${begin}" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.25;0.5;0.75;1" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" values="${SEARCH_GLOBE_VALUES}"/><animate attributeName="opacity" dur="7.2s" begin="${begin}" repeatCount="indefinite" calcMode="linear" keyTimes="0;0.05;0.7;0.75;1" values="0;0.9;0.9;0;0"/></path>`
-  ).join("");
-  return `<svg class="agent-search-globe" viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="0.85" stroke-linecap="round" style="overflow: visible" aria-hidden="true"><circle cx="6" cy="6" r="5.7" opacity="0.9"/><line x1="0.3" y1="6" x2="11.7" y2="6" opacity="0.9"/>${paths}</svg>`;
-})();
+// 地球与状态图标统一由 src/app-shell/icons.js 提供（全应用唯一图标表）。
+const SEARCH_GLOBE_SVG = searchGlobeMarkup();
 // bullet 转圈/勾选与 task-icons 单源同形（taskIcon 产出不含 class，agent.css
 // 按 agent-search-* 做定位/过渡，这里注入 class 即可）。
 const SEARCH_BULLET_DOTS = taskIcon("pending", 16).replace("<svg ", '<svg class="agent-search-dots" ');

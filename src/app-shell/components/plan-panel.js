@@ -3,17 +3,13 @@
 // 存在）、a11y（role=button + aria-expanded + Escape）。
 // AICSS task-list：chip 头部三态图标（列表/pie/实心勾）+ 滚动计数；条目图标
 // 由 components/task-icons.mjs 单源提供（与工作组计划项同源）。
-import { taskIcon } from "./task-icons.mjs";
+import { planGlyphMarkup, planPieMarkup, taskIcon } from "../icons.js";
 
 const STATUS_LABEL = { completed: "已完成", in_progress: "进行中", pending: "待办" };
 
-// AICSS task-list：chip 头部图标三态。pie 弧长 = 2πr ≈ 66，按完成比例绘制；
-// 进度弧配色走 CSS（.plan-chip-pie-arc，见 styles.css）——SVG 属性不解析 var()。
-const CHIP_ICON_SVG = {
-  list: '<svg class="plan-chip-list" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"/></svg>',
-  check: '<svg class="plan-chip-check" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12Zm13.36-1.814a.75.75 0 1 0-1.22-.872l-3.236 4.53L9.53 12.22a.75.75 0 0 0-1.06 1.06l2.25 2.25a.75.75 0 0 0 1.14-.094l3.75-5.25Z" fill="currentColor"/></svg>',
-  pie: (pct) => `<svg class="plan-chip-pie" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><circle cx="12" cy="12" r="10.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-dasharray="2.2 4.4" stroke-linecap="round"/><circle class="plan-chip-pie-arc" cx="12" cy="12" r="10.5" fill="none" stroke-width="2.2" stroke-dasharray="${(pct / 100) * 66} 66" stroke-linecap="round" transform="rotate(-90 12 12)"/></svg>`
-};
+// AICSS task-list：chip 头部图标三态。几何统一由 icons.js 提供（全应用唯一图标表）；
+// 进度环弧长 = 2πr ≈ 66，按完成比例绘制，进度色走 CSS（.plan-chip-pie-arc）。
+const chipIcon = (name, pct) => (name === "pie" ? planPieMarkup(pct) : planGlyphMarkup(name));
 
 export function createPlanPanel({ doc = document }) {
   const chip = doc.createElement("button");
@@ -36,9 +32,9 @@ export function createPlanPanel({ doc = document }) {
   function chipIconHtml(items) {
     const done = items.filter((i) => i.status === "completed").length;
     const total = items.length;
-    if (total > 0 && done === total) return CHIP_ICON_SVG.check;
-    if (done > 0) return CHIP_ICON_SVG.pie(Math.round((done / total) * 100));
-    return CHIP_ICON_SVG.list;
+    if (total > 0 && done === total) return chipIcon("check");
+    if (done > 0) return chipIcon("pie", Math.round((done / total) * 100));
+    return chipIcon("list");
   }
 
   function render(items) {

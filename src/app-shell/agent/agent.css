@@ -857,16 +857,17 @@
   margin-left: auto;
   flex: 0 0 auto;
   align-self: center;
-  width: 7px;
-  height: 7px;
-  border-right: 1.5px solid var(--agent-muted);
-  border-bottom: 1.5px solid var(--agent-muted);
-  transform: rotate(45deg);
+  width: 12px;
+  height: 12px;
+  background-color: var(--agent-muted);
+  -webkit-mask: var(--caret-down) center / 12px 12px no-repeat;
+  mask: var(--caret-down) center / 12px 12px no-repeat;
+  transform: rotate(0deg);
   transition: transform 140ms ease;
 }
 
 .agent-work-group[open] > summary::after {
-  transform: rotate(225deg);
+  transform: rotate(180deg);
 }
 
 .agent-work-status {
@@ -986,16 +987,17 @@
 .agent-tool-caret {
   margin-left: auto;
   flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  border-right: 1.5px solid var(--agent-muted);
-  border-bottom: 1.5px solid var(--agent-muted);
-  transform: rotate(45deg);
+  width: 12px;
+  height: 12px;
+  background-color: var(--agent-muted);
+  -webkit-mask: var(--caret-down) center / 12px 12px no-repeat;
+  mask: var(--caret-down) center / 12px 12px no-repeat;
+  transform: rotate(0deg);
   transition: transform 140ms ease;
 }
 
 .agent-work-item.agent-tool-details--open .agent-tool-caret {
-  transform: rotate(225deg);
+  transform: rotate(180deg);
 }
 
 .agent-work-item[data-kind="reasoning"][data-state="completed"] {
@@ -1005,16 +1007,17 @@
 .agent-reasoning-caret {
   margin-left: auto;
   flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  border-right: 1.5px solid var(--agent-muted);
-  border-bottom: 1.5px solid var(--agent-muted);
-  transform: rotate(45deg); /* 折叠：指向右 ▸ */
+  width: 12px;
+  height: 12px;
+  background-color: var(--agent-muted);
+  -webkit-mask: var(--caret-down) center / 12px 12px no-repeat;
+  mask: var(--caret-down) center / 12px 12px no-repeat;
+  transform: rotate(0deg); /* 折叠：指向下 ▾ */
   transition: transform 140ms ease;
 }
 
 .agent-work-item.agent-reasoning-detail--open .agent-reasoning-caret {
-  transform: rotate(225deg); /* 展开：指向下 ▾ */
+  transform: rotate(180deg); /* 展开：指向上 ▴ */
 }
 
 .agent-tool-details {
