@@ -55,11 +55,11 @@ test("Codex 基线：运行区无横杠、工作项无左侧竖线", () => {
   assert.ok(!/\.agent-work-item::before/u.test(css), "工作项左侧竖线必须移除");
 });
 
-test("圆角层级：styles.css 提供大表面 --r-lg 12px（控件 5 / 卡片 8 / 大表面 12 / 气泡 24）", () => {
+test("圆角层级：styles.css 提供大表面 --r-lg 16px（控件 8 / 卡片 12 / 大表面 16 / 气泡 24）", () => {
   const css = read("src/app-shell/styles.css");
-  assert.match(css, /--r-sm:\s*5px/u);
-  assert.match(css, /--r:\s*8px/u);
-  assert.match(css, /--r-lg:\s*12px/u);
+  assert.match(css, /--r-sm:\s*8px/u);
+  assert.match(css, /--r:\s*12px/u);
+  assert.match(css, /--r-lg:\s*16px/u);
   assert.match(css, /--r-bubble:\s*24px/u);
 });
 
@@ -94,7 +94,7 @@ test("Codex 基线：composer 为细边框 12px 圆角卡片、无阴影", () =>
   const css = read("src/app-shell/agent/agent.css");
   const shell = cssBlock(css, ".agent-composer-shell");
   assert.match(shell, /border:\s*1px solid var\(--agent-line\)/u);
-  assert.match(shell, /border-radius:\s*var\(--r-lg\)/u);
+  assert.match(shell, /border-radius:\s*var\(--r\)/u);
   assert.match(shell, /box-shadow:\s*none/u);
 });
 

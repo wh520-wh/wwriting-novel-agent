@@ -112,7 +112,7 @@ test("对话控制面提供即时反馈、清晰材料层与完整无障碍降�
   );
   assert.match(
     agentCssSource,
-    /\.agent-composer-shell\s*\{[^}]*border:\s*1px solid var\(--agent-line\)[^}]*border-radius:\s*var\(--r-lg\)[^}]*box-shadow:\s*none/u,
+    /\.agent-composer-shell\s*\{[^}]*border:\s*1px solid var\(--agent-line\)[^}]*border-radius:\s*var\(--r\)[^}]*box-shadow:\s*none/u,
     "composer 是细边框 12px 圆角、无阴影的命令台"
   );
   assert.match(
@@ -134,8 +134,8 @@ test("对话控制面提供即时反馈、清晰材料层与完整无障碍降�
 test("主入口使用轻表面，次级操作融入背景", () => {
   assert.match(
     cssSource,
-    /\.new-btn\s*\{[^}]*background:\s*var\(--fill-1\);[^}]*border:\s*0;/u,
-    "新建入口用一档填充区分，不描边"
+    /\.new-btn\s*\{[^}]*background:\s*var\(--surface\);[^}]*border:\s*1px solid var\(--line\);/u,
+    "新建入口用面板底 + 一线描边区分（2026-10-30 全站换样式：不再拿灰块当按钮）"
   );
   assert.match(
     cssSource,

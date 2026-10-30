@@ -423,14 +423,14 @@ test("模型设置布局：model-row 响应式 grid/minmax + min-width:0，窄�
 });
 
 // ===========================================================================
-// 8) 圆角契约：控件 5px、卡片 8px、大表面 12px、消息气泡 24px（口径取自 Claude --cds-radius），圆形/胶囊沿用独立档
+// 8) 圆角契约：控件 8px、卡片 12px、大表面 16px、消息气泡 24px（口径取自 Claude --cds-radius），圆形/胶囊沿用独立档
 // ===========================================================================
-test("圆角按四档递增：5/8/12/24px，组件复用 token", () => {
+test("圆角按四档递增：8/12/16/24px，组件复用 token", () => {
   for (const [file, src] of [["styles.css", stylesSource], ["agent.css", agentCssSource]]) {
     const offenders = [...src.matchAll(/border-radius:\s*(1[1-9]|[2-8][0-9]|9[0-8])px/gu)].map((m) => m[0]);
     assert.equal(offenders.length, 0, `${file} 卡片圆角应引用 token：${offenders.join(", ")}`);
   }
-  for (const [token, expected] of [["--r-sm", "5px"], ["--r", "8px"], ["--r-lg", "12px"], ["--r-bubble", "24px"]]) {
+  for (const [token, expected] of [["--r-sm", "8px"], ["--r", "12px"], ["--r-lg", "16px"], ["--r-bubble", "24px"]]) {
     const value = rootTokens[token] ?? "";
     assert.equal(value, expected, `${token} 应为 ${expected}`);
   }

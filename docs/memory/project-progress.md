@@ -11,6 +11,7 @@
 
 | 入口 | 最近一次验证 | 结果 | 依据与边界 |
 |---|---|---|---|
+| 全站换样式（圆角 8/12/16/24 + 控件 30/32/36 + 设置/抽屉/侧栏收口） | 2026-10-30 | 2096/2096，exit 0 | app-shell 696、非桌面 1360、acceptance 34、desktop 6；`.local/ui-redesign-review.cjs` 出深浅两套全站截图（`artifacts/ui-redesign-2026-10-30/after/`），1440/1280/1024/768/391 无横向溢出且材质断言通过；不代表全量 `npm test` |
 | 工作组卡头右侧留缝修复 | 2026-10-30 | 696/696，exit 0 | `node --test "tests/app-shell/*.test.mjs"`；卡头 720→758（卡片 760），右侧缝 39px→1px；`.local/group-gallery-shot.cjs` 出 before/after 对照（`artifacts/ui-bug-2026-10-30/group-before-2x.png` / `group-after-2x.png`）；不代表全量 |
 | Claude 排版收口（标题相对档 + 思考块形态） | 2026-10-30 | 696/696 + 34/34，exit 0 | `node --test "tests/app-shell/*.test.mjs"`、`tests/acceptance/*.test.mjs`；`.local/claude-preview.cjs` 渲染样张目检（`artifacts/claude-dom-2026-10-30/preview-light.png` / `preview-dark.png`）；标题改 1.6/1.27/1.07/1/.87em + 统一 semibold + h2 去下划线，思考行 chevron 左置（折叠指右 / 展开指下）；不代表全量 |
 | Claude DOM 对齐（对话区结构 + 全站 token） | 2026-10-30 | 2096/2096，exit 0 | app-shell 696、非桌面 1360、acceptance 34、desktop 6；`.local/fade-probe.cjs` 实测滚动渐隐三态（顶 `bottom` / 中 `both` / 底 `top`），截图 `artifacts/ui-redesign-2026-10-30/after/`；口径来自 `D:\claude逆向` 的 `ion-dist` token（灰阶 0–900、`--cds-radius` 5/7/24、气泡 16/12 + 472px、`--cds-message-actions-opacity`、`--cds-scroll-fade-size` 28px）；不代表全量 `npm test` |

@@ -121,7 +121,7 @@
   padding: 0 6px 0 0;
   overflow: visible;
   border: 1px solid var(--agent-line);
-  border-radius: var(--r-lg);
+  border-radius: var(--r);
   background: var(--surface);
   backdrop-filter: none;
   box-shadow: none;
@@ -242,7 +242,7 @@
   margin-bottom: 2px;
   box-sizing: border-box;
   border: 1px solid var(--agent-line);
-  border-radius: var(--r-lg);
+  border-radius: var(--r);
   background: var(--agent-panel);
   backdrop-filter: blur(20px) saturate(1.15);
   box-shadow: var(--shadow-pop);
@@ -1684,7 +1684,7 @@
   padding: 8px;
   margin-bottom: 2px;
   border: 1px solid var(--agent-line-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--r);
   background: var(--agent-panel);
   backdrop-filter: blur(20px) saturate(1.15);
   box-shadow: var(--agent-shadow);
@@ -1790,7 +1790,7 @@
   content: "";
   position: absolute;
   inset: -1px;
-  border-radius: calc(var(--r-lg) + 1px);
+  border-radius: calc(var(--r) + 1px);
   border: 1px solid transparent;
   background: conic-gradient(
       from var(--pi-angle),
@@ -2082,7 +2082,7 @@
   box-sizing: border-box;
   padding: 10px 12px;
   border: 1px solid var(--agent-line-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--r);
   background: var(--agent-panel);
   backdrop-filter: blur(20px) saturate(1.15);
   box-shadow: var(--agent-shadow);

@@ -35,9 +35,9 @@ test("round10 tokens: shared axes, integer type scale and control dimensions hav
     "--font-base: 14px",
     "--font-sm: 13px",
     "--font-xs: 12px",
-    "--control-compact: 32px",
-    "--control-default: 36px",
-    "--target-critical: 40px",
+    "--control-compact: 30px",
+    "--control-default: 32px",
+    "--target-critical: 36px",
     "--motion-press: 80ms",
     "--motion-hover: 140ms",
     "--motion-layer: 200ms"

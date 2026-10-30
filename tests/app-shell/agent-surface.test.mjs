@@ -2631,7 +2631,7 @@ test("agent.css 保留内容列 token、向上菜单与工作组/动效布局", 
   assert.match(css, /@media\s*\(max-width:\s*560px\)[\s\S]*\.agent-queue-item\s*\{/u, "窄视口应调整排队布局避免重叠");
   assert.match(
     css,
-    /\.agent-composer-shell\s*\{[^}]*display:\s*flex[^}]*min-height:\s*44px[^}]*border:\s*1px\s+solid\s+var\(--agent-line\)[^}]*border-radius:\s*var\(--r-lg\)[^}]*box-shadow:\s*none/u,
+    /\.agent-composer-shell\s*\{[^}]*display:\s*flex[^}]*min-height:\s*44px[^}]*border:\s*1px\s+solid\s+var\(--agent-line\)[^}]*border-radius:\s*var\(--r\)[^}]*box-shadow:\s*none/u,
     "composer 应是细边框 12px 圆角、无阴影的 44px 单行命令台"
   );
   assert.match(

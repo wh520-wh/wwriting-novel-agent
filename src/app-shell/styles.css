@@ -70,11 +70,11 @@
   --ink-shadow: 24, 32, 27;   /* 阴影基色，rgba(var(--ink-shadow), α) 用 */
   --ink-scrim: 28, 26, 22;    /* 遮罩基色，rgba(var(--ink-scrim), α) 用 */
 
-  /* 圆角四档，口径取自 Claude --cds-radius--sm/lg 与 --cds-radius(1.5rem)：
-     控件 5 / 卡片 8 / 大表面 12 / 消息气泡 24。 */
-  --r-sm: 5px;
-  --r: 8px;
-  --r-lg: 12px;
+  /* 圆角四档：控件 8 / 卡片 12 / 大表面（弹窗、抽屉）16 / 消息气泡 24。
+     大表面回到 16 是因为 12px 在 720px 宽的设置弹窗上看着太锋利。 */
+  --r-sm: 8px;
+  --r: 12px;
+  --r-lg: 16px;
   --r-bubble: 24px;
   --r-pill: 999px;
 
@@ -121,9 +121,9 @@
   --font-sm: 13px;
   --font-xs: 12px;
 
-  --control-compact: 32px;
-  --control-default: 36px;
-  --target-critical: 40px;
+  --control-compact: 30px;
+  --control-default: 32px;
+  --target-critical: 36px;
 
   --motion-press: 80ms;
   --motion-hover: 140ms;
@@ -400,19 +400,20 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 }
 
 .new-btn {
-  width: 100%; min-height: 34px;
+  width: 100%; min-height: var(--control-default);
   display: inline-flex; align-items: center; justify-content: flex-start; gap: 8px;
   padding: 0 10px;
   border-radius: var(--r-sm);
-  background: var(--fill-1);
-  color: var(--ink-2); font-size: var(--font-sm); font-weight: var(--weight-medium);
-  border: 0;
-  transition: background 100ms ease, color 100ms ease;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--font-sm); font-weight: var(--weight-medium);
+  border: 1px solid var(--line);
+  transition: background 100ms ease, color 100ms ease, border-color 100ms ease;
 }
 
-.new-btn:hover { background: var(--fill-2); color: var(--ink); }
+.new-btn:hover { background: var(--hover); color: var(--ink); border-color: var(--line-hover); }
 
-.new-btn:active { background: var(--fill-3); }
+.new-btn:active { background: var(--fill-2); }
 
 .new-btn svg { display: block; }
 
@@ -430,10 +431,11 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .rail-filter input {
   width: 100%;
-  border: 1px solid transparent;
-  background: var(--fill-1);
+  height: var(--control-compact);
+  border: 1px solid var(--line);
+  background: var(--surface);
   border-radius: var(--r-sm);
-  padding: 6px 9px;
+  padding: 0 10px;
   font-size: var(--font-xs);
   color: var(--ink);
   outline: none;
@@ -442,7 +444,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .rail-filter input::placeholder { color: var(--faint); }
 
-.rail-filter input:hover { background: color-mix(in srgb, var(--rail-2) 70%, transparent); }
+.rail-filter input:hover { border-color: var(--line-hover); background: var(--surface); }
 
 .rail-filter input:focus { border-color: var(--accent); background: var(--surface); box-shadow: 0 0 0 3px var(--focus-ring); }
 
@@ -670,12 +672,12 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 .dtab:hover { color: var(--ink); }
 
-/* Round10：选中态 = 浅背景 + 字重 + accent 下边标记（深色下不再是纯白胶囊） */
+/* 选中态 = 填充 + 字重（2026-10-30 全站换样式：不再用 accent 下边条染色） */
 .dtab.on {
-  background: var(--surface-2);
+  background: var(--fill-2);
   color: var(--ink);
   font-weight: var(--weight-semibold);
-  box-shadow: inset 0 -2px 0 var(--accent);
+  box-shadow: none;
 }
 
 .drawer-body { min-height: 0; overflow: auto; padding: 16px; display: grid; gap: 14px; align-content: start; }
@@ -1055,26 +1057,28 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .sp-section-item {
   width: 100%; text-align: left;
   display: flex; align-items: center; gap: 8px;
-  padding: 10px 12px; border-radius: var(--r); border: 1px solid transparent;
+  padding: 8px 10px; border-radius: var(--r-sm); border: 1px solid transparent;
   color: var(--ink-2); font-size: var(--font-sm); font-weight: var(--weight-medium);
   transition: background var(--motion-hover), color var(--motion-hover), transform var(--motion-press);
 }
 
 .sp-section-item:hover { background: var(--hover); color: var(--ink); }
 
+/* 选中态只用「填充 + 更重的字」表达：去掉 accent 竖条与彩色图标块，
+   与 Claude 设置页一致（选中=浅底+深字，不染色）。 */
 .sp-section-item.on {
   background: var(--surface);
   color: var(--ink);
   font-weight: var(--weight-semibold);
-  box-shadow: inset 3px 0 0 var(--accent), var(--shadow-xs);
+  box-shadow: none;
 }
 
 .sp-section-item .sp-section-ic {
-  width: 22px; height: 22px; border-radius: var(--r-sm); flex: 0 0 auto;
-  display: grid; place-items: center; background: var(--surface-3); color: var(--muted);
+  width: 20px; height: 20px; border-radius: var(--r-sm); flex: 0 0 auto;
+  display: grid; place-items: center; background: transparent; color: var(--muted);
 }
 
-.sp-section-item.on .sp-section-ic { background: var(--accent-soft); color: var(--accent); }
+.sp-section-item.on .sp-section-ic { background: transparent; color: var(--ink); }
 
 .sp-section-item .sp-section-soon {
   margin-left: auto; font-size: var(--font-xs); font-weight: var(--weight-medium); letter-spacing: 0;
@@ -1125,7 +1129,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .spd-key input:focus, .spd-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
 
 .spd-input {
-  width: 100%; height: 36px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface);
+  width: 100%; height: var(--control-default); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface);
   padding: 0 12px; font-size: var(--font-sm); font-family: var(--mono); outline: none;
   transition: border-color .2s, box-shadow .2s, background .2s;
 }
@@ -1434,7 +1438,7 @@ input.spd-input[type="number"] { max-width: 160px; }
    「留给模型的位置」，不写解释段落） */
 .model-area {
   display: grid; gap: 10px; align-content: start;
-  background: var(--surface-2); border-radius: var(--r-lg);
+  background: var(--surface-2); border-radius: var(--r);
   padding: 14px; min-height: 120px;
 }
 .model-area.is-empty { align-content: center; justify-items: center; }
@@ -1453,12 +1457,12 @@ input.spd-input[type="number"] { max-width: 160px; }
 
 .model-settings-body section input,
 .model-settings-body section select {
-  height: 36px; padding: 0 12px; border: 1px solid var(--line);
+  height: var(--control-default); padding: 0 10px; border: 1px solid var(--line);
   border-radius: var(--r-sm); background: var(--surface); color: var(--ink); font-size: var(--font-sm);
 }
 
 .model-settings-body section button[type="button"] {
-  height: 36px; padding: 0 12px; border-radius: var(--r-sm);
+  height: var(--control-default); padding: 0 10px; border-radius: var(--r-sm);
   border: 1px solid var(--line); background: var(--surface);
   color: var(--ink-2); font-size: var(--font-sm); cursor: pointer;
 }
@@ -1812,7 +1816,7 @@ input.spd-input[type="number"] { max-width: 160px; }
     display: none;
     padding: 4px;
     border: 1px solid var(--line);
-    border-radius: var(--r-lg);
+    border-radius: var(--r);
     background: var(--surface);
     box-shadow: var(--shadow-pop);
   }
