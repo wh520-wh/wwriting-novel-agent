@@ -181,7 +181,8 @@ test("三层 token 完整存在：primitive → semantic → component，dark �
   assert.equal(resolveVar("--text-secondary"), "#52514e");
   assert.equal(resolveVar("--text-muted"), "#6d6b67");
   assert.equal(resolveVar("--text-placeholder"), "#a9a79f");
-  assert.equal(resolveVar("--text-link"), "#3f6b4f");
+  assert.equal(resolveVar("--text-link"), resolveVar("--accent"), "链接色跟随品牌色（2026-10-30 换 Claude 蓝）");
+  assert.equal(resolveVar("--accent"), "#256abf", "品牌色 = Claude blue-500（450 在 accent-soft 上只有 3.85:1）");
   assert.equal(resolveVar("--text-success"), "#2c6e49");
   assert.equal(resolveVar("--text-warning"), "#8a6d2f");
   assert.equal(resolveVar("--text-danger"), "#a4422f");
@@ -481,7 +482,7 @@ test("按钮基元三档存在；spinner 显示门收在 :not([hidden]) 内；�
   assert.equal(btn.height, "var(--control-default)", ".btn 默认档应引用 --control-default");
   assert.equal(btn["white-space"], "nowrap", ".btn 文字不得压缩换行");
   const sm = extractDecls(extractBlock(stylesSource, ".btn--sm"));
-  assert.equal(sm.height, "28px", ".btn--sm 紧凑档 28px");
+  assert.equal(sm.height, "var(--control-compact)", ".btn--sm 走紧凑档（--control-compact 30px）");
   const primary = extractDecls(extractBlock(stylesSource, ".btn--primary"));
   assert.equal(primary.background, "var(--btn-gradient)", ".btn--primary 应引用按钮渐变 token");
 

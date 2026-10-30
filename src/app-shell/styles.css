@@ -34,9 +34,9 @@
   --fill-3: color-mix(in srgb, var(--ink) 20%, transparent);
 
   /* status accents — bookish inks: verdant, ochre, oxblood */
-  --accent: #3f6b4f;
-  --accent-soft: #edf3ec;
-  --accent-line: #d2dfd1;
+  --accent: #256abf;        /* Claude blue-500（450 在浅蓝底上只有 3.85:1） */
+  --accent-soft: #e7f1fb;   /* blue-50 */
+  --accent-line: #b7d3f6;   /* blue-150 */
   --green: #2c6e49;
   --green-soft: #edf4ee;
   --green-line: #d3e3d7;
@@ -51,12 +51,13 @@
   --btn: #20201f;
   --btn-2: #141413;
   --btn-ink: #ffffff;
-  --btn-gradient: var(--btn);   /* 取消渐变，保留 token 名给既有主按钮 */
+  /* 主操作接品牌色：主按钮/发送键是蓝色唯一大面积出现的位置（2026-10-30 换 Claude 蓝） */
+  --btn-gradient: var(--accent);
 
   /* scroll / focus tokens */
   --scrollbar-thumb: #cfcdc6;
   --scrollbar-thumb-hover: #b4b2a9;
-  --focus-ring: rgba(63, 107, 79, 0.18);
+  --focus-ring: rgba(37, 106, 191, 0.2);
 
   /* 方向相反的半透明叠色（暗色下自动反转） */
   --spine-line: rgba(0, 0, 0, 0.06);      /* 会话封面书脊线 */
@@ -185,9 +186,9 @@
   --line-hover: var(--line);
   --hover: color-mix(in srgb, var(--ink) 6%, transparent);
 
-  --accent: #8fb08f;
-  --accent-soft: #263026;
-  --accent-line: #3c4a3a;
+  --accent: #6da7ec;        /* Claude blue-300 */
+  --accent-soft: #15293d;
+  --accent-line: #1f3f5e;
   --green: #84ad8f;
   --green-soft: #232e26;
   --green-line: #36483a;
@@ -201,7 +202,7 @@
   --btn: #f0efec;
   --btn-2: #fcfcfb;
   --btn-ink: #151515;
-  --btn-gradient: var(--btn);
+  --btn-gradient: var(--accent);
 
   --scrollbar-thumb: #414943;
   --scrollbar-thumb-hover: #58635c;
@@ -378,7 +379,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .icon-slot { display: inline-flex; flex: 0 0 auto; }
 
 .icon-btn {
-  width: 30px; height: 30px; flex: 0 0 auto;
+  width: var(--control-compact); height: var(--control-compact); flex: 0 0 auto;
   display: grid; place-items: center;
   border-radius: var(--r-sm); color: var(--muted);
   border: 1px solid transparent;
@@ -526,7 +527,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 }
 
 .foot-avatar {
-  width: 30px; height: 30px; border-radius: var(--r); flex: 0 0 auto;
+  width: var(--control-compact); height: var(--control-compact); border-radius: var(--r); flex: 0 0 auto;
   display: grid; place-items: center;
   background: var(--rail-2); border: 1px solid var(--line);
   font-size: var(--font-xs); font-weight: var(--weight-bold); color: var(--ink-2);
@@ -607,7 +608,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 
 .tbtn {
-  width: 32px; height: 32px;
+  width: var(--control-default); height: var(--control-default);
   display: inline-grid; place-items: center;
   padding: 0; border-radius: var(--r-sm);
   border: 1px solid transparent; background: transparent;
@@ -666,7 +667,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .drawer-tabs { display: flex; gap: 2px; padding: 8px 12px; border-bottom: 1px solid var(--line-2); }
 
 .dtab {
-  flex: 1; min-height: 30px; border-radius: var(--r-sm); font-size: var(--font-xs); font-weight: var(--weight-semibold); color: var(--muted);
+  flex: 1; min-height: var(--control-compact); border-radius: var(--r-sm); font-size: var(--font-xs); font-weight: var(--weight-semibold); color: var(--muted);
   transition: background .12s, color .12s;
 }
 
@@ -953,7 +954,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 /* ============================================================
    按钮基元（round17 §3.3）：结构唯一份；皮肤走变体 + 上下文覆盖。
-   尺寸两档：默认 36px（--control-default）/ .btn--sm 28px。
+   尺寸两档：默认 32px（--control-default）/ .btn--sm 30px（--control-compact）。
    ============================================================ */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -968,12 +969,12 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 .btn:hover:not(:disabled) { background: var(--hover); border-color: var(--line-hover); color: var(--ink); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn--primary {
-  padding: 0 20px;
+  padding: 0 16px;
   background: var(--btn-gradient); border-color: transparent; color: var(--btn-ink);
   box-shadow: none;
 }
 .btn--primary:hover:not(:disabled) { background: var(--btn-gradient); filter: brightness(1.13); }
-.btn--sm { height: 28px; padding: 0 10px; font-size: var(--font-xs); }
+.btn--sm { height: var(--control-compact); padding: 0 10px; font-size: var(--font-xs); }
 .btn--danger { color: var(--red); border-color: var(--red-line, var(--line)); }
 .btn--danger:hover:not(:disabled) { background: var(--red-soft); border-color: var(--red); color: var(--red); }
 
@@ -1143,7 +1144,7 @@ input.spd-input[type="number"] { max-width: 160px; }
 
 .spd-affix {
   position: absolute; top: 50%; transform: translateY(-50%);
-  width: 30px; height: 30px; border-radius: var(--r-sm);
+  width: var(--control-compact); height: var(--control-compact); border-radius: var(--r-sm);
   display: grid; place-items: center;
   color: var(--muted); background: transparent; border: 0;
   transition: background .2s, color .2s, transform .12s;
@@ -1438,11 +1439,20 @@ input.spd-input[type="number"] { max-width: 160px; }
    「留给模型的位置」，不写解释段落） */
 .model-area {
   display: grid; gap: 10px; align-content: start;
-  background: var(--surface-2); border-radius: var(--r);
-  padding: 14px; min-height: 120px;
+  /* 2026-10-30：去掉灰底面板——灰底 + 白按钮会互相抵消，按钮看着像禁用输入框。
+     改成平面区块，按钮直接落在页面底上。 */
+  background: transparent; border-radius: 0;
+  padding: 0; min-height: 120px;
 }
 .model-area.is-empty { align-content: center; justify-items: center; }
 .model-area.is-empty .add-model { min-width: 160px; }
+
+/* 拉取类动作改成自适应宽度：满宽 + 居中文字会读成输入框，不像按钮 */
+.model-area > .pull-models,
+.model-area > .candidate-toggle {
+  justify-self: start;
+  min-width: 120px;
+}
 
 /* right pane：供应商详情（骨架，Task 13-15 接管交互）。
    Task 22：隐式列显式化为 minmax(0,1fr)——单列 auto 轨道按 max-content 撑宽

@@ -15,8 +15,8 @@
   --agent-accent-soft: var(--accent-soft);
   --agent-user-bg: var(--fill-1);
   --agent-user-ink: var(--ink);
-  --agent-send-bg: var(--btn);
-  --agent-send-ink: var(--btn-ink);
+  --agent-send-bg: var(--accent);
+  --agent-send-ink: var(--btn-ink); /* 深色下蓝底偏亮，用深字（白字对比度只有 2.5:1） */
   --agent-shadow: var(--shadow-pop);
   height: 100%;
   min-height: 0;
