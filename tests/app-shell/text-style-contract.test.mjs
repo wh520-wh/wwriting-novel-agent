@@ -212,7 +212,7 @@ test("agent component selector 不含 raw hex；dark theme 不覆盖 component a
 // ===========================================================================
 // 2) .agent-markdown 标题层级：primary 非 accent；H1–H6 与 §2.6 完全一致
 // ===========================================================================
-test(".agent-markdown h1/h2 使用 heading primary；H1–H6 字号/行高/字重与 spec §5.5 一致", () => {
+test(".agent-markdown h1/h2 使用 heading primary；H1–H6 按 prose 相对档收字级（Claude 口径）", () => {
   const h1 = extractDecls(extractBlock(agentCssSource, ".agent-markdown h1"));
   const h2 = extractDecls(extractBlock(agentCssSource, ".agent-markdown h2"));
   const h3 = extractDecls(extractBlock(agentCssSource, ".agent-markdown h3"));
@@ -226,23 +226,20 @@ test(".agent-markdown h1/h2 使用 heading primary；H1–H6 字号/行高/字�
   assert.notEqual(resolveVar("--agent-heading-fg"), "#3f6b4f", "标题不得染 accent");
   assert.equal(resolveVar("--agent-subheading-fg"), "#52514e", "H3–H6 应为 secondary");
 
-  // Round10：H1–H6 引用全局整数字阶 token（22/18/16/15/14/13px），
-  // 行高/字重与 round10 spec §5.5 一致；不写死 20/17/15/14px 字面量。
+  // Claude prose 口径：标题是相对 prose 的 em 档（--_prose-h1-size:1.75em … h5/h6 .875em），
+  // 行高 1.25–1.3、统一 semibold。字号不写死 px，随正文基准缩放。
   const expect = [
-    [h1, "--font-2xl", "22px", "1.35", "700"],
-    [h2, "--font-xl", "18px", "1.4", "700"],
-    [h3, "--font-lg", "16px", "1.45", "650"],
-    [h4, "--font-md", "15px", "1.5", "650"],
-    [h5, "--font-base", "14px", "1.55", "650"],
-    [h6, "--font-sm", "13px", "1.55", "650"],
+    [h1, "1.6em", "1.25"],
+    [h2, "1.27em", "1.25"],
+    [h3, "1.07em", "1.3"],
+    [h4, "1em", "1.3"],
+    [h5, ".87em", "1.3"],
+    [h6, ".87em", "1.3"],
   ];
-  for (const [decls, token, size, lh, weight] of expect) {
-    const sizeToken = decls["font-size"].match(/^var\((--[a-z0-9-]+)\)$/u)?.[1];
-    assert.equal(sizeToken, token, "字号应引用全局整数字阶 token");
-    assert.equal(resolveVar(sizeToken), size, "字号 token 值应为整数档");
-    assert.equal(decls["line-height"], lh, "行高应与 spec §5.5 一致");
-    const weightToken = decls["font-weight"].match(/^var\((--[a-z0-9-]+)\)$/u)?.[1];
-    assert.equal(resolveVar(weightToken), weight, "字重应与 spec §5.5 一致");
+  for (const [decls, size, lh] of expect) {
+    assert.equal(decls["font-size"], size, "字号应为相对 prose 的 em 档");
+    assert.equal(decls["line-height"], lh, "行高应与 Claude 标题口径一致");
+    assert.equal(decls["font-weight"], "var(--weight-semibold)", "标题统一 semibold");
   }
 });
 

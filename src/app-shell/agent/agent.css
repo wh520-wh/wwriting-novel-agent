@@ -579,12 +579,14 @@
   line-height: 1.8;
   font-weight: var(--weight-regular);
 }
-.agent-markdown h1 { color: var(--agent-heading-fg); font-size: var(--font-2xl); line-height: 1.35; font-weight: var(--weight-bold); }
-.agent-markdown h2 { color: var(--agent-heading-fg); font-size: var(--font-xl); line-height: 1.4; font-weight: var(--weight-bold); }
-.agent-markdown h3 { color: var(--agent-subheading-fg); font-size: var(--font-lg); line-height: 1.45; font-weight: var(--weight-semibold); }
-.agent-markdown h4 { color: var(--agent-subheading-fg); font-size: var(--font-md); line-height: 1.5; font-weight: var(--weight-semibold); }
-.agent-markdown h5 { color: var(--agent-subheading-fg); font-size: var(--font-base); line-height: 1.55; font-weight: var(--weight-semibold); }
-.agent-markdown h6 { color: var(--agent-subheading-fg); font-size: var(--font-sm); line-height: 1.55; font-weight: var(--weight-semibold); }
+/* 标题层级照 Claude 的 prose 相对档（--_prose-h1-size:1.75em … h4 1em、h5/h6 .875em，
+   行高 1.25–1.3、统一 semibold）：标题不靠字号拉大，靠字重与行距收紧。 */
+.agent-markdown h1 { color: var(--agent-heading-fg); font-size: 1.6em; line-height: 1.25; font-weight: var(--weight-semibold); }
+.agent-markdown h2 { color: var(--agent-heading-fg); font-size: 1.27em; line-height: 1.25; font-weight: var(--weight-semibold); }
+.agent-markdown h3 { color: var(--agent-subheading-fg); font-size: 1.07em; line-height: 1.3; font-weight: var(--weight-semibold); }
+.agent-markdown h4 { color: var(--agent-subheading-fg); font-size: 1em; line-height: 1.3; font-weight: var(--weight-semibold); }
+.agent-markdown h5 { color: var(--agent-subheading-fg); font-size: .87em; line-height: 1.3; font-weight: var(--weight-semibold); }
+.agent-markdown h6 { color: var(--agent-subheading-fg); font-size: .87em; line-height: 1.3; font-weight: var(--weight-semibold); }
 .agent-markdown a { color: var(--text-link); font-weight: var(--weight-medium); text-decoration: underline; }
 .agent-markdown blockquote { color: var(--text-muted); font-size: var(--font-sm); line-height: 1.6; }
 .agent-markdown :not(pre) > code { color: var(--text-secondary); font-size: var(--font-sm); line-height: 1.55; }
@@ -602,8 +604,8 @@
   margin-top: 0;
 }
 .agent-markdown h2 {
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--agent-line); /* H2 细分隔线：建立层级不只靠字号 */
+  padding-bottom: 0;
+  border-bottom: 0; /* Claude 的 prose 标题不带下划线，层级只靠字重与行距 */
 }
 
 .agent-markdown p {
@@ -1036,19 +1038,23 @@
 }
 
 .agent-reasoning-caret {
-  margin-left: auto;
+  /* Claude 思考块：chevron 在文字左侧，折叠时指右、展开时指下。order 让它在
+     DOM 顺序不变（caret 仍最后创建）的前提下排到最前。 */
+  order: -1;
+  margin-left: 0;
+  margin-right: 2px;
   flex: 0 0 auto;
   width: 12px;
   height: 12px;
   background-color: var(--agent-muted);
   -webkit-mask: var(--caret-down) center / 12px 12px no-repeat;
   mask: var(--caret-down) center / 12px 12px no-repeat;
-  transform: rotate(0deg); /* 折叠：指向下 ▾ */
+  transform: rotate(-90deg); /* 折叠：指向右 ▸ */
   transition: transform 140ms ease;
 }
 
 .agent-work-item.agent-reasoning-detail--open .agent-reasoning-caret {
-  transform: rotate(180deg); /* 展开：指向上 ▴ */
+  transform: rotate(0deg); /* 展开：指向下 ▾ */
 }
 
 .agent-tool-details {

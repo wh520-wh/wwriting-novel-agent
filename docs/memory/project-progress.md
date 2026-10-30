@@ -11,6 +11,7 @@
 
 | 入口 | 最近一次验证 | 结果 | 依据与边界 |
 |---|---|---|---|
+| Claude 排版收口（标题相对档 + 思考块形态） | 2026-10-30 | 696/696 + 34/34，exit 0 | `node --test "tests/app-shell/*.test.mjs"`、`tests/acceptance/*.test.mjs`；`.local/claude-preview.cjs` 渲染样张目检（`artifacts/claude-dom-2026-10-30/preview-light.png` / `preview-dark.png`）；标题改 1.6/1.27/1.07/1/.87em + 统一 semibold + h2 去下划线，思考行 chevron 左置（折叠指右 / 展开指下）；不代表全量 |
 | Claude DOM 对齐（对话区结构 + 全站 token） | 2026-10-30 | 2096/2096，exit 0 | app-shell 696、非桌面 1360、acceptance 34、desktop 6；`.local/fade-probe.cjs` 实测滚动渐隐三态（顶 `bottom` / 中 `both` / 底 `top`），截图 `artifacts/ui-redesign-2026-10-30/after/`；口径来自 `D:\claude逆向` 的 `ion-dist` token（灰阶 0–900、`--cds-radius` 5/7/24、气泡 16/12 + 472px、`--cds-message-actions-opacity`、`--cds-scroll-fade-size` 28px）；不代表全量 `npm test` |
 | 上下文环内百分比溢出修复，app-shell 全量 | 2026-10-30 | 696/696，exit 0 | `node --test "tests/app-shell/*.test.mjs"`；`.local/ring-gallery-shot.cjs` 用真实 CSS 渲染 7% / 21% / 100% 三档复核文字均在环内（余量 6.3 / 3.7 / 1.2px），环径 24→28px、环内字号 12→9px，截图在 `artifacts/ui-bug-2026-10-30/`；不代表全量 |
 | 桌面全量 `npm test`，v0.5.5 本地更新前 | 2026-10-14 | 2096/2096，exit 0 | `.local/reading-update-full-tests.log`；包含本轮跟读、等待、选区/键盘、操作焦点、重复渲染、复制反馈和聊天切换回归；正常本机权限，不包含 CLI |
