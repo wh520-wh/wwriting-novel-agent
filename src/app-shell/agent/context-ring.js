@@ -14,7 +14,9 @@
 // 复制而非收编）。命中 reduce 时圆环不加活性 class；popover 过渡由 CSS 媒体
 // 查询降级为淡入或静态。
 const NS = "http://www.w3.org/2000/svg";
-const RING_RADIUS = 9;
+// 24 网格内取 10.5：32px 盒里屏幕直径 28px，给环内百分比（含「100%」三位数）留出描边内的空间；
+// 取 12 会贴住 viewBox 边缘，外描边可能被裁。
+const RING_RADIUS = 10.5;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 let popoverIdCounter = 0;
 

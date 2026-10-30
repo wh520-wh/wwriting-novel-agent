@@ -11,6 +11,7 @@
 
 | 入口 | 最近一次验证 | 结果 | 依据与边界 |
 |---|---|---|---|
+| 上下文环内百分比溢出修复，app-shell 全量 | 2026-10-30 | 696/696，exit 0 | `node --test "tests/app-shell/*.test.mjs"`；`.local/ring-gallery-shot.cjs` 用真实 CSS 渲染 7% / 21% / 100% 三档复核文字均在环内（余量 6.3 / 3.7 / 1.2px），环径 24→28px、环内字号 12→9px，截图在 `artifacts/ui-bug-2026-10-30/`；不代表全量 |
 | 桌面全量 `npm test`，v0.5.5 本地更新前 | 2026-10-14 | 2096/2096，exit 0 | `.local/reading-update-full-tests.log`；包含本轮跟读、等待、选区/键盘、操作焦点、重复渲染、复制反馈和聊天切换回归；正常本机权限，不包含 CLI |
 | v0.5.5 Windows x64 安装器 / 本地可运行包更新 | 2026-10-14 | 构建、产物检查及启动冒烟 exit 0 | `npm run package:installer`、`npm run verify:installer`、`npm run verify:packaged-dir`、`.local/reading-update-artifact-check.cjs`；对应 `.local/reading-update-build-installer.log`、`.local/reading-update-installer-check.log`、`.local/reading-update-packaged-smoke.log` 与 `.local/reading-update-artifact-check.json`；包内版本与四个改动源码逐字节匹配，更新工作区 `dist-desktop/win-unpacked`，未发现已登记安装版或快捷方式，未执行安装器安装或上传 Release 附件 |
 | 聊天切换跟随 / 时间线 / 阅读跟随 / 定稿 / 架构定向检查 | 2026-10-14 | 251/251，exit 0 | `node --test tests/app-shell/agent-surface.test.mjs tests/app-shell/view-timeline.test.mjs tests/app-shell/agent-stream-finalize.test.mjs tests/architecture/dependency-rules.test.mjs`；`.local/ai-chat-follow-targeted.log`；新增四路径行为用例在旧实现下失败（`.local/ai-chat-follow-before-tests.log`）；覆盖缓存/首次聊天、新对话占位、项目切换及原回放阅读不跳动用例，不代表全量 |
